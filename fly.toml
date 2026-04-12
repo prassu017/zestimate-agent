@@ -1,0 +1,62 @@
+# Fly.io deployment config for zestimate-agent.
+#
+# Deploy with:
+#   fly launch --no-deploy       # first time only (creates the app)
+#   fly secrets set UNBLOCKER_API_KEY=xxx UNBLOCKER_PROVIDER=scraperapi \
+#                   ZESTIMATE_API_KEY=my-shared-secret
+#   fly deploy
+#
+# Fly.io's free tier runs 3× shared-cpu-1x machines with 256MB RAM each,
+# which fits this app comfortably (typical RSS is ~120MB).
+#
+# The Dockerfile in this repo is used as-is — no extra Fly-specific build
+# logic needed.
+
+app = "zestimate-agent"
+primary_region = "sea"  # Seattle — close to Zillow's origin servers
+kill_signal = "SIGTERM"
+kill_timeout = 10
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  # Runtime defaults. Keep secrets (API keys) in `fly secrets`, not here.
+  CACHE_BACKEND = "sqlite"
+  CACHE_PATH = "/app/.cache/zestimate.db"
+  LOG_FORMAT = "json"
+  LOG_LEVEL = "INFO"
+  API_HOST = "0.0.0.0"
+  API_PORT = "8000"
+  CROSSCHECK_PROVIDER = "none"  # override to "rentcast" if you set a key
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 0  # scale to zero when idle (free tier friendly)
+  processes = ["app"]
+
+  [http_service.concurrency]
+    type = "requests"
+    hard_limit = 50
+    soft_limit = 25
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    timeout = "5s"
+    path = "/healthz"
+
+# Persistent volume for the SQLite result cache + Rentcast usage counter.
+# 1GB is overkill (real usage is ~10MB) but it's the minimum Fly allocates.
+[[mounts]]
+  source = "zestimate_cache"
+  destination = "/app/.cache"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
+  cpus = 1

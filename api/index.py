@@ -10,7 +10,7 @@ Serverless caveats (vs. a real container deployment):
     * No long-lived process — cold start per invocation, so the in-memory
       cache resets constantly. The synthetic/healthz/version/metrics
       endpoints still work perfectly. Live /lookup calls may exceed Vercel's
-      10s hobby execution limit because real Zillow scraping takes 15–30s.
+      10s hobby execution limit because real Zillow scraping takes 15-30s.
     * No Rentcast counter persistence — we also disable cross-check on
       Vercel so the ephemeral counter file never matters.
 
@@ -34,6 +34,6 @@ os.environ.setdefault("CROSSCHECK_PROVIDER", "none")
 os.environ.setdefault("LOG_FORMAT", "json")
 os.environ.setdefault("LOG_LEVEL", "INFO")
 
-from zestimate_agent.api import create_app  # noqa: E402
+from zestimate_agent.api import create_app
 
 app = create_app()
