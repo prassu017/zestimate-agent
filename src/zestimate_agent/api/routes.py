@@ -12,11 +12,13 @@ import time
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request, Response, status
+from fastapi.responses import HTMLResponse
 
 from zestimate_agent import __version__
 from zestimate_agent.agent import ZestimateAgent
 from zestimate_agent.api import metrics
 from zestimate_agent.api.deps import SettingsDep, get_agent, require_api_key
+from zestimate_agent.api.landing import LANDING_HTML
 from zestimate_agent.api.schemas import (
     HealthResponse,
     LookupRequest,
@@ -44,6 +46,32 @@ _STATUS_TO_HTTP = {
     ZestimateStatus.BLOCKED: status.HTTP_502_BAD_GATEWAY,
     ZestimateStatus.ERROR: status.HTTP_502_BAD_GATEWAY,
 }
+
+
+# ─── Landing page ───────────────────────────────────────────────
+
+
+@router.get(
+    "/",
+    response_class=HTMLResponse,
+    include_in_schema=False,  # keep it out of the OpenAPI schema
+    summary="Interactive landing page",
+)
+async def landing() -> HTMLResponse:
+    """Serve the single-file demo UI at the root path.
+
+    This is a public, interactive page that calls `POST /lookup` via
+    same-origin fetch(). It exists purely for human visitors — machine
+    clients should hit `/lookup` directly (which is fully documented in
+    `/docs`).
+    """
+    return HTMLResponse(
+        content=LANDING_HTML,
+        headers={
+            # Short cache so iteration is fast; CDN can still cache briefly.
+            "Cache-Control": "public, max-age=60",
+        },
+    )
 
 
 # ─── Lookup ─────────────────────────────────────────────────────

@@ -43,6 +43,13 @@ os.environ.setdefault("CROSSCHECK_PROVIDER", "none")
 os.environ.setdefault("LOG_FORMAT", "json")
 os.environ.setdefault("LOG_LEVEL", "INFO")
 
+# Public demo mode: the landing page at GET / calls POST /lookup via
+# same-origin fetch() without an API key header, so we force-clear any
+# ZESTIMATE_API_KEY that may be set in the Vercel dashboard. This is an
+# intentional "anyone can try it" trade-off for the hosted demo; real
+# production (Docker/Fly) keeps auth enabled via the same env var.
+os.environ.pop("ZESTIMATE_API_KEY", None)
+
 from zestimate_agent.api import create_app
 
 app = create_app()

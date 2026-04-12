@@ -136,6 +136,36 @@ async def client(stub_agent: _StubAgent) -> AsyncIterator[AsyncClient]:
         yield c
 
 
+# ─── GET / landing page ─────────────────────────────────────────
+
+
+class TestLanding:
+    async def test_root_returns_html(self, client: AsyncClient) -> None:
+        r = await client.get("/")
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/html")
+        body = r.text
+        # Smoke-check that the inlined UI shipped and wires to /lookup.
+        assert "Zestimate Agent" in body
+        assert "/lookup" in body
+        assert "<form" in body
+
+    async def test_root_bypasses_api_key_auth(self, stub_agent: _StubAgent) -> None:
+        """Even when auth is configured, the landing page is public."""
+        app = create_app(
+            agent=stub_agent,  # type: ignore[arg-type]
+            settings=_settings(api_key="secret-sauce"),
+        )
+        transport = ASGITransport(app=app)
+        async with (
+            AsyncClient(transport=transport, base_url="http://test") as c,
+            app.router.lifespan_context(app),
+        ):
+            r = await c.get("/")
+        assert r.status_code == 200
+        assert "Zestimate Agent" in r.text
+
+
 # ─── /healthz ───────────────────────────────────────────────────
 
 
