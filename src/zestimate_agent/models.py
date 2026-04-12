@@ -107,6 +107,60 @@ class FetchResult(BaseModel):
 # ─── Final result ───────────────────────────────────────────────
 
 
+class PropertyDetails(BaseModel):
+    """Rich property metadata extracted from Zillow's __NEXT_DATA__ blob.
+
+    All fields are optional because availability varies by listing state
+    (for-sale vs off-market vs rental) and property type. The parser
+    extracts whatever is present; consumers should treat every field as
+    potentially None.
+    """
+
+    # Physical
+    bedrooms: int | None = None
+    bathrooms: float | None = None
+    living_area_sqft: int | None = None
+    lot_size_sqft: int | None = None
+    home_type: str | None = Field(
+        default=None,
+        description="SINGLE_FAMILY, CONDO, TOWNHOUSE, MULTI_FAMILY, etc.",
+    )
+    year_built: int | None = None
+
+    # Valuation
+    zestimate_range_low: int | None = Field(
+        default=None, description="Low end of Zillow's Zestimate confidence range."
+    )
+    zestimate_range_high: int | None = Field(
+        default=None, description="High end of Zillow's Zestimate confidence range."
+    )
+    rent_zestimate: int | None = Field(
+        default=None, description="Monthly rent Zestimate in USD."
+    )
+    tax_assessed_value: int | None = None
+    tax_assessed_year: int | None = None
+    monthly_hoa_fee: int | None = None
+
+    # Listing
+    home_status: str | None = Field(
+        default=None,
+        description="FOR_SALE, RECENTLY_SOLD, OFF_MARKET, FOR_RENT, etc.",
+    )
+    price: int | None = Field(
+        default=None, description="Current listing price (if on market)."
+    )
+    days_on_zillow: int | None = None
+
+    # Location
+    latitude: float | None = None
+    longitude: float | None = None
+    county: str | None = None
+
+    # Last sale
+    last_sold_price: int | None = None
+    last_sold_date: str | None = None
+
+
 class CrossCheck(BaseModel):
     """Independent valuation from a second data provider (e.g. Rentcast).
 
@@ -153,6 +207,10 @@ class ZestimateResult(BaseModel):
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     alternates: list[dict[str, Any]] = Field(default_factory=list)
     crosscheck: CrossCheck | None = None
+    property_details: PropertyDetails | None = Field(
+        default=None,
+        description="Rich property metadata (bed/bath/sqft/type/etc.) when available.",
+    )
 
     raw_source: str = "zillow.com"
     fetcher: str | None = None

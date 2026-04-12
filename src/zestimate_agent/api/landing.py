@@ -88,6 +88,20 @@ LANDING_HTML = """<!doctype html>
   .conf-ok { color: var(--good); }
   .conf-mid { color: var(--warn); }
   .conf-lo { color: var(--bad); }
+  /* Property details card */
+  .prop-card { background: var(--panel-hi); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 18px; }
+  .prop-card .prop-headline { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-bottom: 10px; align-items: baseline; }
+  .prop-card .prop-headline .chip { display: inline-block; padding: 2px 8px; border-radius: 999px; font-family: var(--mono); font-size: 11px; }
+  .prop-card .prop-headline .type-chip { background: #1a2332; color: var(--accent); }
+  .prop-card .prop-headline .status-chip { background: #1a2b1a; color: var(--good); }
+  .prop-stats { display: flex; flex-wrap: wrap; gap: 8px 20px; font-size: 13px; }
+  .prop-stats .stat { display: flex; align-items: center; gap: 4px; }
+  .prop-stats .stat .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+  .prop-stats .stat .num { font-family: var(--mono); color: var(--fg); font-weight: 500; }
+  .prop-valuation { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px 20px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+  .prop-valuation .vbox .vk { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; margin-bottom: 1px; }
+  .prop-valuation .vbox .vv { font-family: var(--mono); font-size: 13px; color: var(--fg); }
+
   details { margin-top: 14px; }
   details summary { cursor: pointer; color: var(--muted); font-size: 12px; user-select: none; }
   pre.raw { background: #060810; border: 1px solid var(--border); border-radius: 6px; padding: 12px; margin-top: 8px; overflow-x: auto; color: #c3c9d5; font-size: 12px; }
@@ -223,6 +237,64 @@ LANDING_HTML = """<!doctype html>
     }
     headline.appendChild(h('p', { class: 'addr', text: r.matched_address || addrInput.value }));
     resultEl.appendChild(headline);
+
+    // Property details card (bed/bath/sqft/type etc.)
+    var pd = r.property_details;
+    if (pd) {
+      var pc = h('div', { class: 'prop-card' });
+
+      // Top row: type chip + status chip + key stats
+      var hl = h('div', { class: 'prop-headline' });
+      if (pd.home_type) {
+        var typeLabel = pd.home_type.replace(/_/g, ' ').toLowerCase().replace(/\\b\\w/g, function(c){ return c.toUpperCase(); });
+        hl.appendChild(h('span', { class: 'chip type-chip', text: typeLabel }));
+      }
+      if (pd.home_status) {
+        var statusLabel = pd.home_status.replace(/_/g, ' ').toLowerCase().replace(/\\b\\w/g, function(c){ return c.toUpperCase(); });
+        hl.appendChild(h('span', { class: 'chip status-chip', text: statusLabel }));
+      }
+      pc.appendChild(hl);
+
+      // Stats row: bed / bath / sqft / lot / year
+      var stats = h('div', { class: 'prop-stats' });
+      function addStat(label, val, unit) {
+        if (val == null) return;
+        var s = h('div', { class: 'stat' });
+        s.appendChild(h('span', { class: 'num', text: typeof val === 'number' ? val.toLocaleString() : String(val) }));
+        s.appendChild(h('span', { class: 'label', text: unit || label }));
+        stats.appendChild(s);
+      }
+      addStat('bed', pd.bedrooms, 'bed');
+      addStat('bath', pd.bathrooms, 'bath');
+      addStat('sqft', pd.living_area_sqft, 'sqft');
+      if (pd.lot_size_sqft) addStat('lot', pd.lot_size_sqft, 'lot sqft');
+      addStat('built', pd.year_built, 'built');
+      pc.appendChild(stats);
+
+      // Valuation row: range, rent zestimate, tax, HOA, last sold
+      var hasValuation = pd.zestimate_range_low || pd.rent_zestimate || pd.tax_assessed_value || pd.last_sold_price || pd.monthly_hoa_fee || pd.price;
+      if (hasValuation) {
+        var vrow = h('div', { class: 'prop-valuation' });
+        function vbox(label, val) {
+          var b = h('div', { class: 'vbox' });
+          b.appendChild(h('div', { class: 'vk', text: label }));
+          b.appendChild(h('div', { class: 'vv', text: val }));
+          vrow.appendChild(b);
+        }
+        if (pd.zestimate_range_low != null && pd.zestimate_range_high != null) {
+          vbox('Zestimate range', fmtMoney(pd.zestimate_range_low) + ' - ' + fmtMoney(pd.zestimate_range_high));
+        }
+        if (pd.rent_zestimate != null) vbox('Rent Zestimate', fmtMoney(pd.rent_zestimate) + '/mo');
+        if (pd.price != null) vbox('List price', fmtMoney(pd.price));
+        if (pd.tax_assessed_value != null) vbox('Tax assessed' + (pd.tax_assessed_year ? ' (' + pd.tax_assessed_year + ')' : ''), fmtMoney(pd.tax_assessed_value));
+        if (pd.monthly_hoa_fee != null) vbox('HOA', fmtMoney(pd.monthly_hoa_fee) + '/mo');
+        if (pd.last_sold_price != null) vbox('Last sold' + (pd.last_sold_date ? ' (' + pd.last_sold_date + ')' : ''), fmtMoney(pd.last_sold_price));
+        if (pd.days_on_zillow != null) vbox('Days on Zillow', String(pd.days_on_zillow));
+        pc.appendChild(vrow);
+      }
+
+      resultEl.appendChild(pc);
+    }
 
     // Grid of metadata
     var grid = h('div', { class: 'grid' });

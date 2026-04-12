@@ -17,7 +17,7 @@ from fastapi.responses import HTMLResponse
 from zestimate_agent import __version__
 from zestimate_agent.agent import ZestimateAgent
 from zestimate_agent.api import metrics
-from zestimate_agent.api.deps import SettingsDep, get_agent, require_api_key
+from zestimate_agent.api.deps import SettingsDep, get_agent, rate_limit, require_api_key
 from zestimate_agent.api.landing import LANDING_HTML
 from zestimate_agent.api.schemas import (
     HealthResponse,
@@ -80,7 +80,7 @@ async def landing() -> HTMLResponse:
 @router.post(
     "/lookup",
     response_model=LookupResponse,
-    dependencies=[Depends(require_api_key)],
+    dependencies=[Depends(require_api_key), Depends(rate_limit)],
     responses={
         200: {"description": "Lookup succeeded (check `status` for ok/no_zestimate)."},
         401: {"description": "Missing or invalid API key."},

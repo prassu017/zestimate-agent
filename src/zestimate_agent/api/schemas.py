@@ -41,6 +41,31 @@ class LookupRequest(BaseModel):
     )
 
 
+class PropertyDetailsOut(BaseModel):
+    """Wire form of property metadata (mirrors `models.PropertyDetails`)."""
+
+    bedrooms: int | None = None
+    bathrooms: float | None = None
+    living_area_sqft: int | None = None
+    lot_size_sqft: int | None = None
+    home_type: str | None = None
+    year_built: int | None = None
+    zestimate_range_low: int | None = None
+    zestimate_range_high: int | None = None
+    rent_zestimate: int | None = None
+    tax_assessed_value: int | None = None
+    tax_assessed_year: int | None = None
+    monthly_hoa_fee: int | None = None
+    home_status: str | None = None
+    price: int | None = None
+    days_on_zillow: int | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    county: str | None = None
+    last_sold_price: int | None = None
+    last_sold_date: str | None = None
+
+
 class CrossCheckOut(BaseModel):
     """Wire form of a cross-check (mirrors `models.CrossCheck`)."""
 
@@ -68,6 +93,7 @@ class LookupResponse(BaseModel):
     fetcher: str | None = None
     cached: bool = False
     crosscheck: CrossCheckOut | None = None
+    property_details: PropertyDetailsOut | None = None
     alternates: list[dict[str, Any]] = Field(default_factory=list)
     as_of: str | None = None
     fetched_at: str
@@ -97,6 +123,10 @@ class LookupResponse(BaseModel):
                 skipped=result.crosscheck.skipped,
                 skipped_reason=result.crosscheck.skipped_reason,
             )
+        pd: PropertyDetailsOut | None = None
+        if result.property_details is not None:
+            pd = PropertyDetailsOut(**result.property_details.model_dump())
+
         return cls(
             status=result.status,
             ok=result.ok,
@@ -109,6 +139,7 @@ class LookupResponse(BaseModel):
             fetcher=result.fetcher,
             cached=result.cached,
             crosscheck=cc,
+            property_details=pd,
             alternates=result.alternates,
             as_of=result.as_of.isoformat() if result.as_of else None,
             fetched_at=result.fetched_at.isoformat(),

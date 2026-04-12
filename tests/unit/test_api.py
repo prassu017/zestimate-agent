@@ -127,6 +127,10 @@ def stub_agent() -> _StubAgent:
 
 @pytest.fixture
 async def client(stub_agent: _StubAgent) -> AsyncIterator[AsyncClient]:
+    # Reset per-IP rate limiter so tests don't poison each other.
+    from zestimate_agent.api.deps import reset_rate_limiter
+
+    reset_rate_limiter()
     app = create_app(agent=stub_agent, settings=_settings())  # type: ignore[arg-type]
     transport = ASGITransport(app=app)
     async with (

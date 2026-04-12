@@ -3,14 +3,18 @@
 Commands:
     zestimate lookup "123 Main St, Seattle, WA 98101"
     zestimate lookup --json "123 Main St, Seattle, WA 98101"
+    zestimate batch addresses.csv --out results.csv
     zestimate version
 """
 
 from __future__ import annotations
 
 import asyncio
+import csv
 import json
+import sys
 import typing
+from pathlib import Path
 
 import typer
 from rich.console import Console
@@ -121,6 +125,120 @@ async def _run_lookup(
         )
     finally:
         await agent.aclose()
+
+
+@app.command("batch")
+def batch(
+    file: typing.Annotated[Path, typer.Argument(help="CSV file with an 'address' column (or single column).")],
+    out: typing.Annotated[Path | None, typer.Option("--out", "-o", help="Output CSV path (default: stdout).")] = None,
+    concurrency: int = typer.Option(3, "--concurrency", "-c", help="Parallel lookups."),
+    json_out: bool = typer.Option(False, "--json", help="Emit JSON-lines instead of CSV."),
+    no_crosscheck: bool = typer.Option(False, "--no-crosscheck", help="Skip Rentcast."),
+    no_cache: bool = typer.Option(False, "--no-cache", help="Bypass the result cache."),
+) -> None:
+    """Run batch lookups from a CSV file.
+
+    The CSV must have either a column named 'address' or be a single-column
+    file where every row is an address. Results are written as CSV (or
+    JSON-lines with --json) to --out or stdout.
+    """
+    addresses = _read_address_csv(file)
+    if not addresses:
+        err_console.print("[red]no addresses found in file[/red]")
+        raise typer.Exit(2)
+
+    err_console.print(f"[cyan]batch:[/cyan] {len(addresses)} addresses, concurrency={concurrency}")
+    results = asyncio.run(
+        _run_batch(
+            addresses,
+            concurrency=concurrency,
+            skip_crosscheck=no_crosscheck,
+            use_cache=not no_cache,
+        )
+    )
+
+    output = sys.stdout if out is None else open(out, "w", newline="")  # noqa: SIM115
+    try:
+        if json_out:
+            for addr, result in zip(addresses, results, strict=True):
+                row = {"input_address": addr, **result.model_dump(mode="json")}
+                output.write(json.dumps(row) + "\n")
+        else:
+            writer = csv.writer(output)
+            writer.writerow([
+                "input_address", "status", "value", "matched_address",
+                "zpid", "confidence", "zillow_url", "error",
+            ])
+            for addr, result in zip(addresses, results, strict=True):
+                writer.writerow([
+                    addr,
+                    result.status.value,
+                    result.value or "",
+                    result.matched_address or "",
+                    result.zpid or "",
+                    f"{result.confidence:.3f}",
+                    result.zillow_url or "",
+                    result.error or "",
+                ])
+    finally:
+        if out is not None:
+            output.close()
+
+    ok_count = sum(1 for r in results if r.ok)
+    err_console.print(
+        f"[green]{ok_count}/{len(results)} succeeded[/green]"
+        + (f"  [dim](wrote {out})[/dim]" if out else "")
+    )
+    raise typer.Exit(0 if ok_count == len(results) else 1)
+
+
+def _read_address_csv(path: Path) -> list[str]:
+    """Read addresses from a CSV. Supports 'address' column or single-column files."""
+    with open(path, newline="") as f:
+        # Sniff if there's a header
+        sample = f.read(4096)
+        f.seek(0)
+        sniffer = csv.Sniffer()
+        try:
+            has_header = sniffer.has_header(sample)
+        except csv.Error:
+            has_header = False
+
+        reader = csv.reader(f)
+        if has_header:
+            headers = [h.strip().lower() for h in next(reader)]
+            idx = headers.index("address") if "address" in headers else 0
+        else:
+            idx = 0
+
+        return [row[idx].strip() for row in reader if row and row[idx].strip()]
+
+
+async def _run_batch(
+    addresses: list[str],
+    *,
+    concurrency: int = 3,
+    skip_crosscheck: bool = False,
+    use_cache: bool = True,
+) -> list[ZestimateResult]:
+    """Run multiple lookups with bounded concurrency."""
+    agent = ZestimateAgent.from_env()
+    sem = asyncio.Semaphore(concurrency)
+    results: list[ZestimateResult] = [None] * len(addresses)  # type: ignore[list-item]
+
+    async def _do(i: int, addr: str) -> None:
+        async with sem:
+            results[i] = await agent.aget(
+                addr,
+                skip_crosscheck=skip_crosscheck,
+                use_cache=use_cache,
+            )
+
+    try:
+        await asyncio.gather(*[_do(i, a) for i, a in enumerate(addresses)])
+    finally:
+        await agent.aclose()
+    return results
 
 
 @app.command("eval")

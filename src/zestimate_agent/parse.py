@@ -34,7 +34,7 @@ from typing import Any
 
 from zestimate_agent.errors import NoZestimateError, ParseError
 from zestimate_agent.logging import get_logger
-from zestimate_agent.models import FetchResult, ZestimateResult, ZestimateStatus
+from zestimate_agent.models import FetchResult, PropertyDetails, ZestimateResult, ZestimateStatus
 
 log = get_logger(__name__)
 
@@ -192,6 +192,87 @@ def _find_property(next_data: dict[str, Any]) -> dict[str, Any] | None:
     return best
 
 
+def _extract_property_details(prop: dict[str, Any]) -> PropertyDetails | None:
+    """Extract rich property metadata from the Zillow property dict.
+
+    Every field is best-effort: we take what's there and leave the rest
+    as None. This never raises.
+    """
+    try:
+        zest_val = prop.get("zestimate")
+        zest_low_pct = prop.get("zestimateLowPercent")
+        zest_high_pct = prop.get("zestimateHighPercent")
+
+        range_low: int | None = None
+        range_high: int | None = None
+        if zest_val is not None and zest_low_pct is not None:
+            range_low = int(zest_val * (1 + zest_low_pct / 100))
+        if zest_val is not None and zest_high_pct is not None:
+            range_high = int(zest_val * (1 + zest_high_pct / 100))
+
+        # Last sale from priceHistory (first "Sold" event).
+        last_sold_price: int | None = None
+        last_sold_date: str | None = None
+        for event in prop.get("priceHistory") or []:
+            if isinstance(event, dict) and event.get("event") == "Sold":
+                last_sold_price = _safe_int(event.get("price"))
+                last_sold_date = event.get("date")
+                break
+
+        return PropertyDetails(
+            bedrooms=_safe_int(prop.get("bedrooms")),
+            bathrooms=_safe_float(prop.get("bathrooms")),
+            living_area_sqft=_safe_int(
+                prop.get("livingArea") or prop.get("livingAreaValue")
+            ),
+            lot_size_sqft=_safe_int(
+                prop.get("lotSize") or prop.get("lotAreaValue")
+            ),
+            home_type=prop.get("homeType") or prop.get("propertyTypeDimension"),
+            year_built=_safe_int(prop.get("yearBuilt")),
+            zestimate_range_low=range_low,
+            zestimate_range_high=range_high,
+            rent_zestimate=_safe_int(prop.get("rentZestimate")),
+            tax_assessed_value=_safe_int(prop.get("taxAssessedValue")),
+            tax_assessed_year=_safe_int(prop.get("taxAssessedYear")),
+            monthly_hoa_fee=_safe_int(prop.get("monthlyHoaFee")),
+            home_status=(
+                prop.get("homeStatus")
+                or prop.get("homeStatusForHDP")
+            ),
+            price=_safe_int(prop.get("price")),
+            days_on_zillow=_safe_int(prop.get("daysOnZillow")),
+            latitude=_safe_float(prop.get("latitude")),
+            longitude=_safe_float(prop.get("longitude")),
+            county=prop.get("county"),
+            last_sold_price=last_sold_price,
+            last_sold_date=last_sold_date,
+        )
+    except Exception:
+        log.debug("property details extraction failed (non-fatal)")
+        return None
+
+
+def _safe_int(v: Any) -> int | None:
+    """Coerce to int or return None. Never raises."""
+    if v is None:
+        return None
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_float(v: Any) -> float | None:
+    """Coerce to float or return None. Never raises."""
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 def _build_result(
     prop: dict[str, Any],
     fetch_result: FetchResult,
@@ -218,6 +299,8 @@ def _build_result(
     except (TypeError, ValueError) as e:
         raise ParseError(f"zestimate is not an integer: {zestimate!r}") from e
 
+    details = _extract_property_details(prop)
+
     return ZestimateResult(
         status=ZestimateStatus.OK,
         value=value,
@@ -228,6 +311,7 @@ def _build_result(
         fetched_at=fetch_result.fetched_at,
         confidence=1.0,
         trace_id=trace_id,
+        property_details=details,
     )
 
 
