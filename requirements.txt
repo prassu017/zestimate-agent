@@ -1,0 +1,26 @@
+# Vercel Python runtime installs from requirements.txt.
+# We install the local package (via `.`) plus the `api` extra so FastAPI,
+# uvicorn, and prometheus-client are available in the serverless bundle.
+# Production / Docker installs from pyproject.toml [project.optional-dependencies.api]
+# directly — this file only exists for Vercel's Python runtime.
+
+# Core runtime deps (mirrors pyproject.toml)
+pydantic>=2.6
+pydantic-settings>=2.2
+httpx>=0.27
+tenacity>=8.2
+structlog>=24.1
+typer>=0.12
+rich>=13.7
+usaddress>=0.5.10
+selectolax>=0.3.21
+python-dotenv>=1.0
+diskcache>=5.6
+
+# API extra
+fastapi>=0.110
+uvicorn>=0.29
+prometheus-client>=0.20
+
+# Install the package itself so `zestimate_agent` is importable.
+-e .

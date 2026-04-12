@@ -1,0 +1,25 @@
+# Mirrors .dockerignore — keep the deploy bundle small.
+.git
+.github
+.venv
+venv
+env
+__pycache__
+*.py[cod]
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+htmlcov
+.hypothesis
+.cache
+.env
+.env.*
+!.env.example
+tests
+scripts
+.DS_Store
+*.swp
+SPEC.md
+Dockerfile
+.dockerignore

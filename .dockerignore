@@ -1,0 +1,47 @@
+# ─── VCS ────────────────────────────────────────────────────────
+.git
+.gitignore
+.github
+
+# ─── Python cruft ───────────────────────────────────────────────
+__pycache__
+*.py[cod]
+*$py.class
+*.egg-info
+*.egg
+.eggs
+.tox
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+htmlcov
+.hypothesis
+dist
+build
+
+# ─── Virtual envs ───────────────────────────────────────────────
+.venv
+venv
+env
+
+# ─── Local state — never ship into an image ────────────────────
+.cache
+.env
+.env.*
+!.env.example
+
+# ─── Tests + dev-only ──────────────────────────────────────────
+tests
+scripts
+notebooks
+
+# ─── Editor / OS ────────────────────────────────────────────────
+.vscode
+.idea
+.DS_Store
+*.swp
+*~
+
+# ─── Docs that don't need to be in the image ───────────────────
+SPEC.md
