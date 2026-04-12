@@ -114,7 +114,7 @@ async def lookup(
         pass
 
     response.status_code = _STATUS_TO_HTTP.get(result.status, status.HTTP_200_OK)
-    return LookupResponse.from_result(result)
+    return LookupResponse.from_result(result, elapsed_ms=int(elapsed * 1000))
 
 
 # ─── Health / readiness ─────────────────────────────────────────

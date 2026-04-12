@@ -68,13 +68,23 @@ class LookupResponse(BaseModel):
     fetcher: str | None = None
     cached: bool = False
     crosscheck: CrossCheckOut | None = None
+    alternates: list[dict[str, Any]] = Field(default_factory=list)
     as_of: str | None = None
     fetched_at: str
+    elapsed_ms: int | None = Field(
+        default=None,
+        description="Wall-clock latency from request entry to response, in milliseconds.",
+    )
     trace_id: str | None = None
     error: str | None = None
 
     @classmethod
-    def from_result(cls, result: ZestimateResult) -> LookupResponse:
+    def from_result(
+        cls,
+        result: ZestimateResult,
+        *,
+        elapsed_ms: int | None = None,
+    ) -> LookupResponse:
         cc: CrossCheckOut | None = None
         if result.crosscheck is not None:
             cc = CrossCheckOut(
@@ -99,8 +109,10 @@ class LookupResponse(BaseModel):
             fetcher=result.fetcher,
             cached=result.cached,
             crosscheck=cc,
+            alternates=result.alternates,
             as_of=result.as_of.isoformat() if result.as_of else None,
             fetched_at=result.fetched_at.isoformat(),
+            elapsed_ms=elapsed_ms,
             trace_id=result.trace_id,
             error=result.error,
         )

@@ -8,8 +8,15 @@ import pytest
 from zestimate_agent.errors import FetchBlockedError, FetchError
 from zestimate_agent.fetch.unblocker import ScraperAPIFetcher, ZenRowsFetcher
 
-# A fake Zillow HTML page big enough to pass the length heuristic.
-_OK_HTML = "<html><body>" + ("x" * 1000) + "<p>normal content</p></body></html>"
+# A fake Zillow HTML page big enough to pass the length heuristic and
+# containing the `__NEXT_DATA__` marker so the fast-path fetch doesn't
+# trigger the render=true auto-upgrade.
+_OK_HTML = (
+    "<html><body>"
+    + ("x" * 1000)
+    + '<script id="__NEXT_DATA__" type="application/json">{}</script>'
+    + "<p>normal content</p></body></html>"
+)
 
 
 def _transport(handler) -> httpx.MockTransport:  # type: ignore[no-untyped-def]
@@ -21,7 +28,13 @@ def _transport(handler) -> httpx.MockTransport:  # type: ignore[no-untyped-def]
 
 @pytest.mark.asyncio
 async def test_scraperapi_happy_path() -> None:
+    """Fast path: no `render=true` unless we have to upgrade."""
     seen: dict[str, str] = {}
+    test_url = "https://www.zillow.com/homedetails/happy_zpid/"
+
+    # Make sure no sticky upgrades from previous tests leak in.
+    ScraperAPIFetcher._RENDER_URLS.discard(test_url)
+    ScraperAPIFetcher._ULTRA_URLS.discard(test_url)
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen["url"] = str(request.url)
@@ -29,13 +42,50 @@ async def test_scraperapi_happy_path() -> None:
 
     async with httpx.AsyncClient(transport=_transport(handler)) as client:
         f = ScraperAPIFetcher("test-key", client=client)
-        result = await f.fetch("https://www.zillow.com/homedetails/123_zpid/")
+        result = await f.fetch(test_url)
 
     assert result.status == 200
     assert result.fetcher == "scraperapi"
     assert "api_key=test-key" in seen["url"]
     assert "premium=true" in seen["url"]
-    assert "render=true" in seen["url"]
+    # Fast path must NOT include render=true — that's the whole point of
+    # the optimization. If Zillow ever stops server-side-rendering
+    # `__NEXT_DATA__` we'd auto-upgrade, but the mocked HTML has it.
+    assert "render=true" not in seen["url"]
+
+
+@pytest.mark.asyncio
+async def test_scraperapi_upgrades_to_render_when_next_data_missing() -> None:
+    """If the fast-path HTML is missing `__NEXT_DATA__`, retry with render=true."""
+    test_url = "https://www.zillow.com/homedetails/norender_zpid/"
+    # Hermetic: clear any sticky state from other tests.
+    ScraperAPIFetcher._RENDER_URLS.discard(test_url)
+    ScraperAPIFetcher._ULTRA_URLS.discard(test_url)
+
+    calls: list[str] = []
+    no_hydration_html = "<html><body>" + ("y" * 2000) + "</body></html>"
+    full_html = _OK_HTML
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        calls.append(url)
+        if "render=true" in url:
+            return httpx.Response(200, text=full_html)
+        return httpx.Response(200, text=no_hydration_html)
+
+    async with httpx.AsyncClient(transport=_transport(handler)) as client:
+        f = ScraperAPIFetcher("test-key", client=client)
+        result = await f.fetch(test_url)
+
+    assert result.status == 200
+    # First call: no render (fast path). Second call: render=true upgrade.
+    assert len(calls) == 2
+    assert "render=true" not in calls[0]
+    assert "render=true" in calls[1]
+    assert test_url in ScraperAPIFetcher._RENDER_URLS
+
+    # Cleanup to not pollute downstream tests.
+    ScraperAPIFetcher._RENDER_URLS.discard(test_url)
 
 
 # ─── Blocked body detected ─────────────────────────────────────

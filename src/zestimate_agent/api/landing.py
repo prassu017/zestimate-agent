@@ -195,7 +195,7 @@ LANDING_HTML = """<!doctype html>
     resultEl.innerHTML = '';
     resultEl.appendChild(h('div', {}, [
       h('span', { class: 'spinner' }),
-      h('span', { text: 'Contacting Zillow via ScraperAPI… (cold start can take 10-30s)' })
+      h('span', { text: 'Contacting Zillow via ScraperAPI… (usually 2-5s warm; cached hits <50ms)' })
     ]));
   }
   function renderError(msg, raw) {
@@ -239,14 +239,47 @@ LANDING_HTML = """<!doctype html>
     if (r.fetcher) grid.appendChild(cell('fetcher', r.fetcher));
     if (r.zpid) grid.appendChild(cell('zpid', r.zpid));
     if (r.cached != null) grid.appendChild(cell('cached', r.cached ? 'yes' : 'no'));
+    if (r.elapsed_ms != null) grid.appendChild(cell('lookup took', (r.elapsed_ms / 1000).toFixed(2) + ' s'));
     if (r.crosscheck && r.crosscheck.estimate != null) {
       grid.appendChild(cell('rentcast', fmtMoney(r.crosscheck.estimate)));
       grid.appendChild(cell('delta %', r.crosscheck.delta_pct != null ? r.crosscheck.delta_pct.toFixed(2) + '%' : '—'));
+      if (r.crosscheck.range_low != null && r.crosscheck.range_high != null) {
+        grid.appendChild(cell('rentcast range', fmtMoney(r.crosscheck.range_low) + ' - ' + fmtMoney(r.crosscheck.range_high)));
+      }
+      if (r.crosscheck.within_tolerance != null) {
+        grid.appendChild(cell('agreement', r.crosscheck.within_tolerance ? 'within tolerance' : 'disagrees'));
+      }
     } else if (r.crosscheck && r.crosscheck.skipped) {
       grid.appendChild(cell('rentcast', 'skipped'));
+      if (r.crosscheck.skipped_reason) grid.appendChild(cell('skip reason', r.crosscheck.skipped_reason));
     }
     if (r.trace_id) grid.appendChild(cell('trace id', r.trace_id));
     resultEl.appendChild(grid);
+
+    // Alternates (only when the resolver returned ambiguous candidates).
+    if (r.alternates && r.alternates.length > 0) {
+      var altBox = h('div', { class: 'addr', html: '<strong>Other candidates:</strong>' });
+      altBox.style.marginTop = '12px';
+      var ul = document.createElement('ul');
+      ul.style.margin = '6px 0 0 18px';
+      ul.style.padding = '0';
+      ul.style.fontSize = '12px';
+      r.alternates.forEach(function(a) {
+        var li = document.createElement('li');
+        li.textContent = (a.display || 'unknown') + (a.zpid ? ' (zpid ' + a.zpid + ')' : '') + (a.score != null ? ' — score ' + a.score : '');
+        ul.appendChild(li);
+      });
+      altBox.appendChild(ul);
+      resultEl.appendChild(altBox);
+    }
+
+    // Surface error text if present (e.g. blocked / error status).
+    if (r.error) {
+      var errP = h('p', { class: 'addr' });
+      errP.style.color = 'var(--bad)';
+      errP.textContent = 'error: ' + r.error;
+      resultEl.appendChild(errP);
+    }
 
     // Link to Zillow + raw
     if (r.zillow_url) {

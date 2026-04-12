@@ -6,7 +6,11 @@ the rest of the pipeline.
 
 Credit-cost knobs per provider (as of 2026-04):
 
-* ScraperAPI: `render=true` + `premium=true` ≈ 25 credits per Zillow call
+* ScraperAPI: `premium=true` only ≈ 10 credits per Zillow call (fast path,
+  ~2-3s). Upgrades to `render=true` (~25 credits, ~15-25s) only when the
+  fetched HTML lacks the Next.js `__NEXT_DATA__` hydration blob — which
+  should be almost never, because Zillow property pages server-side render
+  it into the initial response.
 * ZenRows: `js_render=true` + `premium_proxy=true` ≈ 25 credits
 * Bright Data Web Unlocker: flat rate
 
@@ -146,36 +150,48 @@ class UnblockerFetcherBase:
 class ScraperAPIFetcher(UnblockerFetcherBase):
     """ScraperAPI unblocker.
 
-    Default mode: `render=true` + `premium=true` (~25 credits per Zillow call).
+    Default mode: `premium=true` (~10 credits per Zillow call, ~2-3s wall).
+    Zillow property pages are server-side-rendered Next.js, so the
+    `__NEXT_DATA__` hydration blob ships in the initial HTML with no JS
+    needed. Skipping `render=true` cuts latency ~10x and credit cost ~60%.
 
-    Some protected properties (high-profile commercial, Apple HQ, etc.) need
-    `ultra_premium=true` (~30 credits). Rather than paying that upfront for
-    every request, we upgrade *on retry* if the first attempt returns a 500
-    with ScraperAPI's "protected domain" message.
+    Two sticky upgrades on retry:
+
+    * `render=true` — if the fetched HTML lacks `__NEXT_DATA__`, we re-fetch
+      with JS rendering enabled (~25 credits, ~15-25s). This is the safety
+      net for pages that don't SSR the hydration blob.
+    * `ultra_premium=true` — some protected properties (Apple HQ, etc.)
+      need ultra_premium (~30 credits). We upgrade on a "protected domain"
+      500 response.
+
+    Both upgrades are class-level sets so the decision is sticky across
+    retries and subsequent calls to the same URL.
     """
 
     name = "scraperapi"
     api_url = "http://api.scraperapi.com/"
 
-    # When set, subsequent attempts on this URL will use ultra_premium.
-    # Class-level so the upgrade is sticky across retries and instances.
+    # URLs that previously needed ultra_premium — sticky across instances.
     _ULTRA_URLS: ClassVar[set[str]] = set()
+    # URLs that previously needed JS render (no `__NEXT_DATA__` without it).
+    _RENDER_URLS: ClassVar[set[str]] = set()
 
     def _params(self, url: str) -> dict[str, Any]:
         params = {
             "api_key": self._api_key,
             "url": url,
-            "render": "true",
             "premium": "true",
             "country_code": "us",
         }
+        if url in self._RENDER_URLS:
+            params["render"] = "true"
         if url in self._ULTRA_URLS:
             params["ultra_premium"] = "true"
         return params
 
     async def _fetch_once(self, url: str) -> FetchResult:
         try:
-            return await super()._fetch_once(url)
+            result = await super()._fetch_once(url)
         except FetchError as e:
             msg = str(e).lower()
             if (
@@ -190,6 +206,24 @@ class ScraperAPIFetcher(UnblockerFetcherBase):
                 self._ULTRA_URLS.add(url)
                 return await super()._fetch_once(url)
             raise
+
+        # Happy-path feedback loop: if the raw HTML didn't include the
+        # Next.js hydration blob, the no-render fast path probably didn't
+        # work for this URL. Upgrade to render=true and try once more.
+        # Only applies to Zillow property pages, so scope the check.
+        if (
+            url not in self._RENDER_URLS
+            and "/homedetails/" in url
+            and "__NEXT_DATA__" not in result.html
+        ):
+            log.info(
+                "scraperapi upgrading to render=true (no __NEXT_DATA__)",
+                url=url,
+            )
+            self._RENDER_URLS.add(url)
+            return await super()._fetch_once(url)
+
+        return result
 
 
 class ZenRowsFetcher(UnblockerFetcherBase):
