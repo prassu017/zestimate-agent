@@ -29,7 +29,16 @@ import os
 # ─── Force serverless-safe defaults before importing the agent ──
 # These MUST be set before `zestimate_agent.config` is first imported,
 # because get_settings() is @lru_cache'd and locks in whatever it sees.
+#
+# Vercel's function filesystem layout:
+#   /var/task      — read-only (code + deps)
+#   /tmp           — writable, ~512MB, wiped on cold start
+#
+# Any path that the agent writes to MUST live under /tmp, otherwise
+# the first write raises `OSError: [Errno 30] Read-only file system`.
 os.environ.setdefault("CACHE_BACKEND", "memory")
+os.environ.setdefault("CACHE_PATH", "/tmp/zestimate.db")
+os.environ.setdefault("RENTCAST_USAGE_PATH", "/tmp/rentcast_usage.json")
 os.environ.setdefault("CROSSCHECK_PROVIDER", "none")
 os.environ.setdefault("LOG_FORMAT", "json")
 os.environ.setdefault("LOG_LEVEL", "INFO")
