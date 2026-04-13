@@ -36,7 +36,9 @@ import os
 #
 # Any path that the agent writes to MUST live under /tmp, otherwise
 # the first write raises `OSError: [Errno 30] Read-only file system`.
-os.environ.setdefault("CACHE_BACKEND", "memory")
+# Use SQLite on /tmp so the cache survives across warm invocations
+# (same container). Memory cache resets every request in serverless.
+os.environ.setdefault("CACHE_BACKEND", "sqlite")
 os.environ.setdefault("CACHE_PATH", "/tmp/zestimate.db")
 os.environ.setdefault("RENTCAST_USAGE_PATH", "/tmp/rentcast_usage.json")
 os.environ.setdefault("CROSSCHECK_PROVIDER", "none")
