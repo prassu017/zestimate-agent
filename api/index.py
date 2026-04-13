@@ -49,6 +49,11 @@ os.environ.setdefault("LOG_LEVEL", "INFO")
 # on a blocked address. If ScraperAPI fails once, fail fast.
 os.environ.setdefault("HTTP_MAX_RETRIES", "1")
 
+# ScraperAPI premium proxies consistently need 25-35s for Zillow pages.
+# The default 30s timeout cuts off right at the boundary. Bump to 45s
+# so requests that take 30-40s still succeed.
+os.environ.setdefault("HTTP_TIMEOUT_SECONDS", "45")
+
 # Public demo mode: the landing page at GET / calls POST /lookup via
 # same-origin fetch() without an API key header, so we force-clear any
 # ZESTIMATE_API_KEY that may be set in the Vercel dashboard. This is an
