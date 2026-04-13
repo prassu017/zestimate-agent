@@ -61,7 +61,13 @@ _DEFAULT_HEADERS = {
 
 
 class ZillowResolver:
-    """Resolver backed by Zillow's public autocomplete endpoint."""
+    """Resolver backed by Zillow's public autocomplete endpoint.
+
+    Connection pooling: when no external client is injected, the resolver
+    lazily creates a shared ``httpx.AsyncClient`` on first use and reuses
+    it across calls. This avoids a fresh TLS handshake per resolve (~100ms
+    saved per call after the first).
+    """
 
     def __init__(
         self,
@@ -70,33 +76,40 @@ class ZillowResolver:
         timeout: float | None = None,
     ) -> None:
         settings = get_settings()
-        self._client = client
+        self._ext_client = client
         self._timeout = timeout or settings.http_timeout_seconds
-        self._owns_client = client is None
+        self._own_client: httpx.AsyncClient | None = None
+
+    def _get_client(self) -> httpx.AsyncClient:
+        if self._ext_client is not None:
+            return self._ext_client
+        if self._own_client is None:
+            self._own_client = httpx.AsyncClient(
+                timeout=self._timeout,
+                headers=_DEFAULT_HEADERS,
+            )
+        return self._own_client
 
     async def resolve(self, address: NormalizedAddress) -> ResolvedProperty:
         query = address.canonical
         log.debug("resolver query", q=query)
 
-        client = self._client or httpx.AsyncClient(
-            timeout=self._timeout,
-            headers=_DEFAULT_HEADERS,
-        )
+        client = self._get_client()
         try:
             r = await client.get(AUTOCOMPLETE_URL, params={"q": query})
             r.raise_for_status()
             data = r.json()
         except httpx.HTTPError as e:
             raise ResolverError(f"autocomplete request failed: {e}") from e
-        finally:
-            if self._owns_client:
-                await client.aclose()
 
         return self._pick_best(address, data)
 
     async def aclose(self) -> None:
-        if self._client is not None and self._owns_client:
-            await self._client.aclose()
+        if self._own_client is not None:
+            await self._own_client.aclose()
+            self._own_client = None
+        if self._ext_client is not None:
+            await self._ext_client.aclose()
 
     # ─── Internal ───────────────────────────────────────────────
 

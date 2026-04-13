@@ -60,7 +60,12 @@ def _looks_blocked(html: str) -> bool:
 
 
 class UnblockerFetcherBase:
-    """Shared behavior for all unblocker-style fetchers."""
+    """Shared behavior for all unblocker-style fetchers.
+
+    Connection pooling: when no external client is injected, the fetcher
+    lazily creates a shared ``httpx.AsyncClient`` on first use and reuses
+    it across calls, avoiding a fresh TLS handshake per fetch.
+    """
 
     name = "unblocker"
     api_url: str = ""
@@ -75,8 +80,8 @@ class UnblockerFetcherBase:
         settings = get_settings()
         self._api_key = api_key
         self._timeout = timeout or settings.http_timeout_seconds
-        self._client = client
-        self._owns_client = client is None
+        self._ext_client = client
+        self._own_client: httpx.AsyncClient | None = None
 
     def _params(self, url: str) -> dict[str, Any]:  # pragma: no cover - abstract
         raise NotImplementedError
@@ -84,9 +89,17 @@ class UnblockerFetcherBase:
     async def fetch(self, url: str) -> FetchResult:
         return await self._fetch_with_retry(url)
 
+    def _get_client(self) -> httpx.AsyncClient:
+        if self._ext_client is not None:
+            return self._ext_client
+        if self._own_client is None:
+            self._own_client = httpx.AsyncClient(timeout=self._timeout)
+        return self._own_client
+
     async def aclose(self) -> None:
-        if self._client is not None and self._owns_client:
-            await self._client.aclose()
+        if self._own_client is not None:
+            await self._own_client.aclose()
+            self._own_client = None
 
     # ─── Retry wrapper ──────────────────────────────────────────
 
@@ -110,7 +123,7 @@ class UnblockerFetcherBase:
         return await _attempt()
 
     async def _fetch_once(self, url: str) -> FetchResult:
-        client = self._client or httpx.AsyncClient(timeout=self._timeout)
+        client = self._get_client()
         start = time.monotonic()
         try:
             log.debug("unblocker fetch", provider=self.name, url=url)
@@ -139,9 +152,6 @@ class UnblockerFetcherBase:
             )
         except httpx.ReadTimeout as e:
             raise FetchTimeoutError(str(e)) from e
-        finally:
-            if self._owns_client:
-                await client.aclose()
 
 
 # ─── Concrete providers ─────────────────────────────────────────

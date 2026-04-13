@@ -38,11 +38,12 @@ $ zestimate lookup "1600 Amphitheatre Pkwy, Mountain View, CA 94043"
 
 ## What it is
 
-A single Python package that ships **three interfaces** to the same core pipeline:
+A single Python package that ships **four interfaces** to the same core pipeline:
 
 | Interface | Entry point | Use case |
 |---|---|---|
 | **CLI** | `zestimate lookup "<addr>"` | Ad-hoc lookups, ops debugging |
+| **Batch CLI** | `zestimate batch addresses.csv` | Bulk lookups from CSV |
 | **Python** | `ZestimateAgent.from_env().aget(addr)` | Embedding in another service |
 | **HTTP** | `POST /lookup` (FastAPI) | Production microservice, containerized |
 
@@ -58,11 +59,13 @@ The pipeline is **pluggable at every layer** via Protocol types, so you can swap
 |---|---|
 | **Eval accuracy (synthetic + fixture, 8 cases)** | **100%** (8/8 exact match) |
 | **Live accuracy (Seattle condo, real Zillow)** | **exact** ($636,500, zpid 82362438) |
-| **Unit + integration tests passing** | **177 / 177** (+ 4 live integration skipped) |
-| **Mypy strict** | **clean** (26 source files) |
+| **Unit + integration tests passing** | **180 / 180** (+ 4 live integration skipped) |
+| **Mypy strict** | **clean** (27 source files) |
 | **Ruff (`E F I N UP B SIM RUF`)** | **clean** |
-| **Lines of production code** | ~2,700 |
-| **Cache-hit latency (real server)** | **16 ms** (vs ~15 s cold) |
+| **Lines of production code** | ~3,200 |
+| **Cold lookup latency (ScraperAPI)** | **~2-5 s** (render=false fast path) |
+| **Cache-hit latency (real server)** | **~16 ms** |
+| **CI** | GitHub Actions: lint + test (py3.11/3.12) + coverage + eval + Docker |
 
 The eval harness has **three modes**:
 
@@ -93,9 +96,13 @@ cp .env.example .env
 ### Run
 
 ```bash
-# CLI
+# CLI — single lookup
 zestimate lookup "123 Main St, Seattle, WA 98101"
 zestimate lookup --json "123 Main St, Seattle, WA 98101"
+
+# CLI — batch from CSV
+zestimate batch addresses.csv --out results.csv
+zestimate batch addresses.csv --json --concurrency 5
 
 # HTTP server
 zestimate serve --port 8000
@@ -165,7 +172,7 @@ zestimate eval --mode all --json   # machine-readable for dashboards
    └──────┬─────┘
           │
           ▼
-   ZestimateResult { status, value, zpid, confidence, crosscheck, trace_id, cached, … }
+   ZestimateResult { status, value, zpid, confidence, property_details, crosscheck, trace_id, … }
 ```
 
 Each layer is a `Protocol` the orchestrator depends on — tests inject fakes, real code uses the default implementations.
@@ -183,6 +190,14 @@ Zillow is a Next.js app. Every property page ships a `<script id="__NEXT_DATA__"
 - **Fast** — one `json.loads()` on ~500KB vs traversing selectolax selectors.
 
 Two fallback tiers (regex over inline JSON; then HTML span heuristic) exist for the ~1% of pages where the hydration blob is missing or truncated.
+
+### Rich property details, zero extra API calls
+
+The same `__NEXT_DATA__` blob that carries the Zestimate also contains **bedrooms, bathrooms, sqft, lot size, year built, property type, rent Zestimate, Zestimate confidence range, tax assessment, HOA, listing status, last sale price/date, and lat/lon**. We parse all of these into a `PropertyDetails` model and surface them in both the API response and the interactive landing page UI. This costs zero extra credits and transforms the demo from "scraper that returns a number" into "property intelligence platform."
+
+### Render-free fast path (10x faster, 60% cheaper)
+
+Zillow's Next.js app server-side-renders the `__NEXT_DATA__` blob into the initial HTML response. ScraperAPI's `render=true` mode spins up a headless browser, runs JavaScript, and waits for the page to settle -- unnecessary for SSR'd content. We default to `premium=true` only (~10 credits, ~2-3s) and auto-upgrade to `render=true` (~25 credits, ~15-25s) only if the fetched HTML lacks the hydration blob. Same sticky-upgrade pattern as our existing `ultra_premium` escalation.
 
 ### Pluggable fetchers, protocol-typed
 
@@ -252,12 +267,14 @@ Single-node simplicity. The target deployment is one container; a second process
 
 ## Observability
 
-Structured logging via **structlog** with per-request `trace_id`. Every log line carries:
+Structured logging via **structlog** with per-request `trace_id` propagated through `structlog.contextvars`. The `trace_id` is bound once at the start of each lookup and automatically appears in every log line from every pipeline stage (normalizer, resolver, fetcher, parser, validator) -- no explicit passing required:
 
 ```
 {"event": "lookup done", "trace_id": "f1d2…", "value": 636500,
  "confidence": 0.95, "fetcher": "unblocker", "crosscheck": {...}}
 ```
+
+The `trace_id` is also returned as an `X-Request-ID` response header for correlation with load balancers and observability tooling.
 
 Set `LOG_FORMAT=json` for machine-parseable output (Docker image default), `LOG_FORMAT=pretty` for dev.
 
@@ -266,7 +283,8 @@ Set `LOG_FORMAT=json` for machine-parseable output (Docker image default), `LOG_
 | Metric | Type | Labels | Purpose |
 |---|---|---|---|
 | `zestimate_lookups_total` | counter | `status` | Lookups by terminal status |
-| `zestimate_lookup_duration_seconds` | histogram | — | End-to-end latency |
+| `zestimate_lookup_duration_seconds` | histogram | -- | End-to-end latency |
+| `zestimate_stage_duration_seconds` | histogram | `stage` | Per-stage latency (normalize, resolve, fetch, parse, validate) |
 | `zestimate_cache_events_total` | counter | `event` | Hit / miss / write |
 | `zestimate_crosscheck_total` | counter | `outcome` | ok / skipped / error |
 | `zestimate_rentcast_usage` | gauge | — | Current-month Rentcast calls used |
@@ -337,17 +355,20 @@ Final image is ~150 MB, runs as non-root, ships only the runtime venv (no build 
 
 ## Cost model
 
-Per lookup at steady-state:
+Per lookup at steady-state (with render-free fast path):
 
-| Path | Unblocker credits | Rentcast reqs | Wall time |
+| Path | ScraperAPI credits | Rentcast reqs | Wall time |
 |---|---|---|---|
 | Cache hit | **0** | 0 | **~16 ms** |
-| Cache miss, no cross-check | ~10–25 | 0 | ~3–8 s |
-| Cache miss, with cross-check | ~10–25 | 1 | ~3–10 s |
+| Cache miss, fast path (no render) | **~10** | 0 | **~2-5 s** |
+| Cache miss, render fallback | ~25 | 0 | ~15-25 s |
+| Cache miss, with cross-check | ~10 | 1 | ~3-6 s |
 
-At ScraperAPI hobby pricing (~$0.002/credit) and a 70% cache hit rate, a service doing 10k lookups/day costs roughly **$1.50/day** on scraping, **plus a flat $0–$15/month for infra** (one small VPS, or a $5/mo Fly.io nano). Rentcast stays free by construction (40-req/mo cap).
+The render-free fast path works for >99% of Zillow property pages (they server-side-render `__NEXT_DATA__`). The ~25-credit render fallback only fires for rare pages that don't include the hydration blob.
 
-The cache is where the unit economics live. At 0% hit rate you're paying credits on every call; at 70% hit rate the same service is **3× cheaper**.
+At ScraperAPI hobby pricing (~$0.002/credit) and a 70% cache hit rate, a service doing 10k lookups/day costs roughly **$0.60/day** on scraping (down from $1.50 with the render-free optimization), **plus a flat $0-$15/month for infra** (one small VPS, or a $5/mo Fly.io nano). Rentcast stays free by construction (40-req/mo cap).
+
+The cache is where the unit economics live. At 0% hit rate you're paying credits on every call; at 70% hit rate the same service is **3x cheaper**.
 
 ---
 
@@ -358,30 +379,34 @@ The cache is where the unit economics live. At 0% hit rate you're paying credits
 | 1 | **Redis cache backend** | ~60 lines | Required for > 1 pod; `ResultCache` Protocol is ready |
 | 2 | **VCR-style replay for resolver tests** | 1 day | Currently mocks httpx at respx; replaying real Zillow autocomplete responses would catch schema drift |
 | 3 | **Playwright fallback fetcher** | 2 days | For the pathological 1% the unblocker can't get through; already scaffolded as a Protocol |
-| 4 | **Per-address rate limiting** | 1 day | Avoid hammering Zillow on a single property even if a client forgets to cache |
+| 4 | **Circuit breaker for ScraperAPI** | 1 day | Fast-fail after N consecutive failures instead of retrying into a dead provider |
 | 5 | **Pydantic-based config for the eval dataset** | 1 day | So non-engineers can add cases by editing a YAML file |
-| 6 | **OpenTelemetry traces** | 2 days | Span per pipeline stage. We already emit per-stage structured logs with `trace_id`, so this is mostly glue code |
+| 6 | **OpenTelemetry traces** | 2 days | Span per pipeline stage. We already emit per-stage Prometheus histograms and `trace_id` in contextvars, so this is mostly glue code |
 | 7 | **CDN in front of `/lookup`** with signed URLs | 3 days | Free extra cache layer; moves 90% of duplicate traffic off the origin |
 | 8 | **A `ZillowSitemap` pre-warmer** | 3 days | Nightly crawl of the top-N ZIPs to pre-populate the cache |
 
-I intentionally did not build these during the take-home — each one is real engineering I'd rather discuss in person than hand-wave. What *is* built is the substrate they'd all sit on.
+I intentionally did not build these during the take-home -- each one is real engineering I'd rather discuss in person than hand-wave. What *is* built is the substrate they'd all sit on.
 
 ---
 
 ## Project layout
 
 ```
+.github/workflows/
+└── ci.yml              # lint + test (py3.11/3.12) + coverage + eval + Docker
+
 src/zestimate_agent/
 ├── __init__.py
-├── agent.py            # orchestrator (never-raises contract)
+├── agent.py            # orchestrator (never-raises, per-stage timers, trace_id propagation)
 ├── api/                # FastAPI layer
 │   ├── app.py          # factory + lifespan + middleware
-│   ├── routes.py       # /lookup, /healthz, /readyz, /version, /metrics
-│   ├── deps.py         # dependency injection + X-API-Key auth
-│   ├── schemas.py      # wire types (separate from internal models)
-│   └── metrics.py      # Prometheus counters/histograms/gauges
+│   ├── routes.py       # /lookup, /zestimate, /healthz, /readyz, /version, /metrics
+│   ├── deps.py         # dependency injection + X-API-Key auth + rate limiter
+│   ├── landing.py      # interactive demo UI (single-file, zero-build)
+│   ├── schemas.py      # wire types (PropertyDetailsOut, CrossCheckOut, LookupResponse)
+│   └── metrics.py      # Prometheus counters/histograms/gauges (incl. per-stage)
 ├── cache.py            # daily-partitioned, TTL-bounded diskcache backend
-├── cli.py              # typer CLI (lookup, eval, serve, cache-*, rentcast-status)
+├── cli.py              # typer CLI (lookup, batch, eval, serve, cache-*, rentcast-status)
 ├── config.py           # pydantic-settings, all env vars
 ├── crosscheck.py       # Rentcast client + persistent monthly counter
 ├── errors.py           # typed error taxonomy
@@ -390,23 +415,23 @@ src/zestimate_agent/
 │   ├── runner.py       # synthetic/fixture/live modes, bounded concurrency
 │   ├── report.py       # stats + JSON + CSV + rich tables
 │   └── fixtures/       # recorded Zillow HTML for regression tests
-├── fetch/              # pluggable fetchers
-│   └── unblocker.py    # ScraperAPI / ZenRows / BrightData
-├── logging.py          # structlog config
-├── models.py           # pydantic contracts between every layer
+├── fetch/              # pluggable fetchers (connection-pooled)
+│   └── unblocker.py    # ScraperAPI / ZenRows / BrightData (render-free fast path)
+├── logging.py          # structlog config (contextvars-based trace_id)
+├── models.py           # pydantic contracts (PropertyDetails, CrossCheck, ZestimateResult)
 ├── normalize.py        # usaddress-backed address parser
-├── parse.py            # three-tier Zillow parser
-├── resolve.py          # Zillow autocomplete → zpid resolver
+├── parse.py            # three-tier parser + property details extraction
+├── resolve.py          # Zillow autocomplete -> zpid resolver (connection-pooled)
 └── validate.py         # sanity + cross-check
 
 tests/
-├── unit/               # 177 tests, 26 source files, mypy strict, ruff clean
+├── unit/               # 180 tests, 27 source files, mypy strict, ruff clean
 │   ├── test_agent_cache.py
-│   ├── test_api.py         (22)
+│   ├── test_api.py         (24)
 │   ├── test_cache.py       (25)
 │   ├── test_crosscheck.py  (17)
 │   ├── test_eval.py        (23)
-│   └── …
+│   └── ...
 └── integration/
     └── test_resolver_live.py  # opt-in, needs RUN_LIVE_TESTS=1
 ```

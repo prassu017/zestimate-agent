@@ -114,7 +114,23 @@ async def lookup(
         pass
 
     response.status_code = _STATUS_TO_HTTP.get(result.status, status.HTTP_200_OK)
+    if result.trace_id:
+        response.headers["X-Request-ID"] = result.trace_id
     return LookupResponse.from_result(result, elapsed_ms=int(elapsed * 1000))
+
+
+# Spec-compliant alias: SPEC.md section 7 defines the endpoint as
+# ``POST /zestimate``. We keep ``/lookup`` as the primary (documented)
+# name for backwards compatibility and add this alias so both work.
+router.add_api_route(
+    "/zestimate",
+    lookup,
+    methods=["POST"],
+    response_model=LookupResponse,
+    dependencies=[Depends(require_api_key), Depends(rate_limit)],
+    summary="Look up a Zestimate (alias for /lookup)",
+    include_in_schema=False,  # avoid duplicate in OpenAPI docs
+)
 
 
 # ─── Health / readiness ─────────────────────────────────────────

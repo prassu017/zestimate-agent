@@ -10,7 +10,10 @@ Callers can inspect `result.status` or just check `result.ok`.
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
+
+import structlog
 
 from zestimate_agent.cache import ResultCache, build_cache
 from zestimate_agent.config import Settings, get_settings
@@ -36,6 +39,29 @@ from zestimate_agent.resolve import ZillowResolver
 from zestimate_agent.validate import validate as validate_result
 
 log = get_logger(__name__)
+
+
+# ─── Per-stage latency (Prometheus + structured log) ───────────
+
+try:
+    from prometheus_client import Histogram
+
+    STAGE_LATENCY = Histogram(
+        "zestimate_stage_duration_seconds",
+        "Per-pipeline-stage latency in seconds.",
+        labelnames=("stage",),
+        buckets=(0.001, 0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0),
+    )
+except Exception:  # pragma: no cover — prometheus_client may not be installed
+    STAGE_LATENCY = None  # type: ignore[assignment]
+
+
+def _stage_ms(stage: str, t0: float) -> None:
+    """Log and record a pipeline stage's wall-clock duration."""
+    elapsed = time.monotonic() - t0
+    log.debug("stage done", stage=stage, elapsed_ms=int(elapsed * 1000))
+    if STAGE_LATENCY is not None:
+        STAGE_LATENCY.labels(stage=stage).observe(elapsed)
 
 
 class ZestimateAgent:
@@ -103,12 +129,21 @@ class ZestimateAgent:
     ) -> ZestimateResult:
         """Primary async entry point. Never raises."""
         trace_id = str(uuid.uuid4())
-        log.info("lookup start", trace_id=trace_id, address=address)
+
+        # Bind trace_id to structlog contextvars so every downstream log
+        # line (normalizer, resolver, fetcher, parser) carries it without
+        # explicit passing.
+        structlog.contextvars.clear_contextvars()
+        structlog.contextvars.bind_contextvars(trace_id=trace_id)
+
+        log.info("lookup start", address=address)
         normalized: NormalizedAddress | None = None
 
         # ─── 1. Normalize ───
         try:
+            t0 = time.monotonic()
             normalized = await asyncio.to_thread(self._normalizer.normalize, address)
+            _stage_ms("normalize", t0)
         except NormalizationError as e:
             return ZestimateResult(
                 status=ZestimateStatus.NOT_FOUND,
@@ -134,7 +169,9 @@ class ZestimateAgent:
 
         # ─── 2. Resolve ───
         try:
+            t0 = time.monotonic()
             resolved = await self._resolver.resolve(normalized)
+            _stage_ms("resolve", t0)
         except PropertyNotFoundError as e:
             not_found = ZestimateResult(
                 status=ZestimateStatus.NOT_FOUND,
@@ -155,7 +192,7 @@ class ZestimateAgent:
                 trace_id=trace_id,
             )
         except ResolverError as e:
-            log.warning("resolver error", trace_id=trace_id, error=str(e))
+            log.warning("resolver error", error=str(e))
             return ZestimateResult(
                 status=ZestimateStatus.ERROR,
                 matched_address=normalized.canonical,
@@ -165,7 +202,6 @@ class ZestimateAgent:
 
         log.info(
             "resolved",
-            trace_id=trace_id,
             zpid=resolved.zpid,
             confidence=resolved.match_confidence,
             canonical=normalized.canonical,
@@ -173,8 +209,10 @@ class ZestimateAgent:
 
         # ─── 3. Fetch ───
         try:
+            t0 = time.monotonic()
             fetcher = self._get_fetcher()
             fetch_result = await fetcher.fetch(resolved.url)
+            _stage_ms("fetch", t0)
         except FetchBlockedError as e:
             return ZestimateResult(
                 status=ZestimateStatus.BLOCKED,
@@ -185,7 +223,7 @@ class ZestimateAgent:
                 trace_id=trace_id,
             )
         except FetchError as e:
-            log.error("fetch error", trace_id=trace_id, error=str(e))
+            log.error("fetch error", error=str(e))
             return ZestimateResult(
                 status=ZestimateStatus.ERROR,
                 zpid=resolved.zpid,
@@ -197,7 +235,9 @@ class ZestimateAgent:
 
         # ─── 4. Parse ───
         try:
+            t0 = time.monotonic()
             result = await asyncio.to_thread(parse_page, fetch_result)
+            _stage_ms("parse", t0)
         except NoZestimateError as e:
             no_zest = ZestimateResult(
                 status=ZestimateStatus.NO_ZESTIMATE,
@@ -215,7 +255,7 @@ class ZestimateAgent:
                 )
             return no_zest
         except ParseError as e:
-            log.error("parse error", trace_id=trace_id, error=str(e))
+            log.error("parse error", error=str(e))
             return ZestimateResult(
                 status=ZestimateStatus.ERROR,
                 zpid=resolved.zpid,
@@ -246,6 +286,7 @@ class ZestimateAgent:
         )
 
         # ─── 6. Validate (sanity + cross-check) ───
+        t0 = time.monotonic()
         validated = await validate_result(
             enriched,
             client=self._get_crosschecker(),
@@ -253,6 +294,8 @@ class ZestimateAgent:
             force_crosscheck=force_crosscheck,
             skip_crosscheck=skip_crosscheck,
         )
+
+        _stage_ms("validate", t0)
 
         # ─── 7. Cache write ───
         if use_cache:
@@ -262,7 +305,6 @@ class ZestimateAgent:
 
         log.info(
             "lookup done",
-            trace_id=trace_id,
             value=validated.value,
             confidence=validated.confidence,
             fetcher=validated.fetcher,
