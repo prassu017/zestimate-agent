@@ -140,9 +140,9 @@ LANDING_HTML = """<!doctype html>
       </div>
       <div class="examples">
         try:
-        <a href="#" data-addr="350 5th Ave, New York, NY 10118">Empire State</a>
-        <a href="#" data-addr="2 Lincoln Memorial Cir NW, Washington, DC 20002">Lincoln Memorial</a>
+        <a href="#" data-addr="500 5th Ave W #705, Seattle, WA 98119">Seattle Condo</a>
         <a href="#" data-addr="1 Infinite Loop, Cupertino, CA 95014">Infinite Loop</a>
+        <a href="#" data-addr="1600 Pennsylvania Ave NW, Washington, DC 20500">White House</a>
       </div>
     </form>
     <section class="card" id="result"></section>
@@ -377,12 +377,16 @@ LANDING_HTML = """<!doctype html>
       });
       var body = null;
       try { body = await res.json(); } catch (e) { body = { error: 'non-JSON response', raw: await res.text() }; }
-      if (!res.ok && res.status === 502) {
-        renderError('Zillow fetch was blocked or timed out. On Vercel Hobby (10s limit), cold lookups often exceed the function timeout — ScraperAPI needs ~25-35s to render Zillow pages. Cached lookups work instantly. Try again (result may be cached now) or run locally for full functionality.', body);
+      if (!res.ok && (res.status === 502 || res.status === 504)) {
+        renderError('Zillow fetch was blocked or timed out. ScraperAPI premium proxies need ~25-35s to render Zillow pages. Try again (result may now be cached) or try a different address.', body);
       } else if (!res.ok && res.status >= 500) {
         renderError('Server returned HTTP ' + res.status, body);
-      } else if (body && body.error) {
-        renderError(body.detail || body.error, body);
+      } else if (body && body.ok === false && body.status === 'not_found') {
+        renderResult(body);
+      } else if (body && body.ok === false && body.status === 'no_zestimate') {
+        renderResult(body);
+      } else if (body && body.error && body.ok === false && (body.status === 'error' || body.status === 'blocked')) {
+        renderError(body.error, body);
       } else {
         renderResult(body);
       }

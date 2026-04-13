@@ -43,6 +43,10 @@ os.environ.setdefault("CROSSCHECK_PROVIDER", "none")
 os.environ.setdefault("LOG_FORMAT", "json")
 os.environ.setdefault("LOG_LEVEL", "INFO")
 
+# Serverless-optimized: 1 attempt (no retry) so we don't burn 90s
+# on a blocked address. If ScraperAPI fails once, fail fast.
+os.environ.setdefault("HTTP_MAX_RETRIES", "1")
+
 # Public demo mode: the landing page at GET / calls POST /lookup via
 # same-origin fetch() without an API key header, so we force-clear any
 # ZESTIMATE_API_KEY that may be set in the Vercel dashboard. This is an
