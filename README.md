@@ -59,13 +59,15 @@ The pipeline is **pluggable at every layer** via Protocol types, so you can swap
 |---|---|
 | **Eval accuracy (synthetic + fixture, 33 cases)** | **100%** (33/33 exact match) |
 | **Live accuracy (Seattle condo, real Zillow)** | **exact** ($636,500, zpid 82362438) |
-| **Unit + integration tests passing** | **257 / 257** (+ 4 live integration skipped) |
+| **Unit + integration tests passing** | **269 / 269** (+ 4 live integration skipped) |
 | **Mypy strict** | **clean** (34 source files) |
 | **Ruff (`E F I N UP B SIM RUF`)** | **clean** |
 | **Lines of production code** | ~4,500 |
-| **Cold lookup latency (ScraperAPI)** | **~2-5 s** (render=false fast path) |
+| **Cold lookup latency (ScraperAPI)** | **~25-35 s** (premium proxy + JS render) |
 | **Cache-hit latency (real server)** | **~16 ms** |
 | **CI** | GitHub Actions: lint + test (py3.11/3.12) + coverage + eval + Docker |
+
+> **Live demo on Vercel** — first lookup takes ~30s because ScraperAPI's premium residential proxies need that long to render Zillow's JS-heavy pages. Subsequent lookups for the same address return from cache in <100ms. A persistent deployment (Fly.io, Railway, or Docker) eliminates the ~1-2s serverless cold start but the ScraperAPI render time is the real bottleneck. In production, pre-warming the cache for a known address list brings effective latency to near-zero.
 
 The eval harness has **three modes**:
 
