@@ -81,14 +81,23 @@ async def landing() -> HTMLResponse:
     "/lookup",
     response_model=LookupResponse,
     dependencies=[Depends(require_api_key), Depends(rate_limit)],
+    tags=["lookup"],
     responses={
         200: {"description": "Lookup succeeded (check `status` for ok/no_zestimate)."},
         401: {"description": "Missing or invalid API key."},
         404: {"description": "Address did not resolve to a Zillow property."},
         409: {"description": "Address resolved to multiple candidates."},
+        422: {"description": "Request body validation failed."},
+        429: {"description": "Rate limit exceeded."},
         502: {"description": "Fetcher blocked or unexpected error."},
     },
     summary="Look up a Zestimate for an address",
+    description=(
+        "Given a US property address, fetches the current Zillow Zestimate "
+        "and returns it with confidence scoring, optional Rentcast cross-check, "
+        "and rich property details (bed/bath/sqft/type/etc). "
+        "Results are cached for 6 hours. Set `use_cache: false` to bypass."
+    ),
 )
 async def lookup(
     body: LookupRequest,
@@ -128,6 +137,7 @@ router.add_api_route(
     methods=["POST"],
     response_model=LookupResponse,
     dependencies=[Depends(require_api_key), Depends(rate_limit)],
+    tags=["lookup"],
     summary="Look up a Zestimate (alias for /lookup)",
     include_in_schema=False,  # avoid duplicate in OpenAPI docs
 )

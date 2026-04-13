@@ -30,6 +30,7 @@ from zestimate_agent.errors import (
     ZestimateError,
 )
 from zestimate_agent.fetch.base import Fetcher
+from zestimate_agent.fetch.chain import FetcherChain
 from zestimate_agent.fetch.circuit_breaker import CircuitOpenError
 from zestimate_agent.fetch.playwright import build_playwright_fetcher
 from zestimate_agent.fetch.unblocker import build_unblocker_fetcher
@@ -66,6 +67,15 @@ def _stage_ms(stage: str, t0: float) -> None:
         STAGE_LATENCY.labels(stage=stage).observe(elapsed)
 
 
+def _playwright_available() -> bool:
+    """Check if playwright is importable without side effects."""
+    try:
+        import playwright  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
 class ZestimateAgent:
     """High-level agent. Construct via `ZestimateAgent.from_env()` or pass deps."""
 
@@ -79,7 +89,7 @@ class ZestimateAgent:
         crosschecker: RentcastClient | None = None,
         cache: ResultCache | None = None,
     ) -> None:
-        self.settings = settings
+        self._settings = settings
         self._normalizer = normalizer or default_normalizer()
         self._resolver = resolver or ZillowResolver()
         self._fetcher: Fetcher | None = fetcher
@@ -102,7 +112,14 @@ class ZestimateAgent:
             if self._settings.fetcher_primary == "playwright":
                 self._fetcher = build_playwright_fetcher()
             else:
-                self._fetcher = build_unblocker_fetcher()
+                primary = build_unblocker_fetcher()
+                # When Playwright is enabled and installed, wrap in a
+                # chain so blocked requests automatically fall back to
+                # headless Chrome.
+                if self._settings.playwright_enabled and _playwright_available():
+                    self._fetcher = FetcherChain(primary, build_playwright_fetcher())
+                else:
+                    self._fetcher = primary
         return self._fetcher
 
     def _get_crosschecker(self) -> RentcastClient | None:
@@ -134,7 +151,35 @@ class ZestimateAgent:
     ) -> ZestimateResult:
         """Primary async entry point. Never raises."""
         trace_id = str(uuid.uuid4())
+        try:
+            return await self._aget_inner(
+                address,
+                trace_id=trace_id,
+                skip_crosscheck=skip_crosscheck,
+                force_crosscheck=force_crosscheck,
+                use_cache=use_cache,
+            )
+        except Exception as e:
+            # Last-resort catch-all: the "never raises" contract must hold
+            # even for completely unexpected errors (e.g. RuntimeError from
+            # a misbehaving dependency).
+            log.error("unexpected error in aget", error=str(e), exc_info=True)
+            return ZestimateResult(
+                status=ZestimateStatus.ERROR,
+                error=f"unexpected: {e}",
+                trace_id=trace_id,
+            )
 
+    async def _aget_inner(
+        self,
+        address: str,
+        *,
+        trace_id: str,
+        skip_crosscheck: bool = False,
+        force_crosscheck: bool = False,
+        use_cache: bool = True,
+    ) -> ZestimateResult:
+        """Inner implementation — may raise, caught by aget()."""
         # Bind trace_id to structlog contextvars so every downstream log
         # line (normalizer, resolver, fetcher, parser) carries it without
         # explicit passing.

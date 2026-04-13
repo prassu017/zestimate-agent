@@ -82,10 +82,27 @@ def create_app(
         description=(
             "HTTP interface to the Zestimate agent. Fetches the current Zillow "
             "Zestimate for a US property address with optional Rentcast "
-            "cross-check. See /docs for the OpenAPI browser."
+            "cross-check, rich property details, and confidence scoring.\n\n"
+            "**Pipeline:** normalize -> resolve -> fetch -> parse -> validate\n\n"
+            "**Key invariant:** every lookup returns a structured result with a "
+            "`status` field — the API never returns unstructured errors."
         ),
         version=__version__,
         lifespan=lifespan,
+        openapi_tags=[
+            {
+                "name": "lookup",
+                "description": "Core Zestimate lookup endpoints. POST an address, get back a valuation.",
+            },
+            {
+                "name": "health",
+                "description": "Liveness and readiness probes for orchestrators (k8s, ECS, etc).",
+            },
+            {
+                "name": "meta",
+                "description": "Version info and Prometheus metrics exposition.",
+            },
+        ],
     )
 
     # ─── CORS (opt-in) ───────────────────────────────────────
