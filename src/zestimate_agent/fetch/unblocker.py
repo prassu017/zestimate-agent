@@ -126,10 +126,10 @@ class UnblockerFetcherBase:
             stop=stop_after_attempt(settings.http_max_retries),
             wait=wait_exponential(
                 multiplier=settings.http_backoff_base_seconds,
-                max=30,
+                max=10,
             ),
             retry=retry_if_exception_type(
-                (httpx.TransportError, httpx.ReadTimeout, FetchTimeoutError, FetchBlockedError)
+                (httpx.TransportError, httpx.ReadTimeout, FetchTimeoutError)
             ),
             reraise=True,
         )

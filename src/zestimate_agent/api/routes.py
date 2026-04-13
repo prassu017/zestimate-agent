@@ -26,6 +26,9 @@ from zestimate_agent.api.deps import (
 )
 from zestimate_agent.api.landing import LANDING_HTML
 from zestimate_agent.api.schemas import (
+    BatchRequest,
+    BatchResponse,
+    BatchResultItem,
     HealthResponse,
     LookupRequest,
     LookupResponse,
@@ -33,7 +36,7 @@ from zestimate_agent.api.schemas import (
 )
 from zestimate_agent.crosscheck import get_usage_counter
 from zestimate_agent.logging import get_logger
-from zestimate_agent.models import ZestimateStatus
+from zestimate_agent.models import ZestimateResult, ZestimateStatus
 
 AgentDep = Annotated[ZestimateAgent, Depends(get_agent)]
 
@@ -148,6 +151,100 @@ router.add_api_route(
     summary="Look up a Zestimate (alias for /lookup)",
     include_in_schema=False,  # avoid duplicate in OpenAPI docs
 )
+
+
+# ─── Batch ─────────────────────────────────────────────────────
+
+
+@router.post(
+    "/batch",
+    response_model=BatchResponse,
+    dependencies=[Depends(require_api_key), Depends(rate_limit)],
+    tags=["lookup"],
+    summary="Batch lookup for multiple addresses",
+    description=(
+        "Look up Zestimates for up to 50 addresses in a single request. "
+        "Results are returned in the same order as the input. "
+        "Cross-check is skipped by default to conserve Rentcast budget."
+    ),
+)
+async def batch_lookup(
+    body: BatchRequest,
+    agent: AgentDep,
+) -> BatchResponse:
+    import asyncio
+
+    started = time.monotonic()
+    sem = asyncio.Semaphore(5)
+
+    async def _do(addr: str) -> ZestimateResult:
+        async with sem:
+            return await agent.aget(
+                addr,
+                skip_crosscheck=body.skip_crosscheck,
+                use_cache=body.use_cache,
+            )
+
+    results = await asyncio.gather(*[_do(a) for a in body.addresses])
+    elapsed = time.monotonic() - started
+
+    items = [
+        BatchResultItem.from_result(addr, result)
+        for addr, result in zip(body.addresses, results, strict=True)
+    ]
+    ok_count = sum(1 for r in results if r.ok)
+
+    return BatchResponse(
+        total=len(items),
+        ok_count=ok_count,
+        results=items,
+        elapsed_ms=int(elapsed * 1000),
+    )
+
+
+# ─── GET convenience alias ─────────────────────────────────────
+
+
+@router.get(
+    "/lookup",
+    response_model=LookupResponse,
+    dependencies=[Depends(require_api_key), Depends(verify_signed_url), Depends(rate_limit)],
+    tags=["lookup"],
+    responses={
+        200: {"description": "Lookup succeeded."},
+        401: {"description": "Missing or invalid API key."},
+        404: {"description": "Address did not resolve to a Zillow property."},
+        422: {"description": "Missing or invalid address query parameter."},
+        502: {"description": "Fetcher blocked or unexpected error."},
+    },
+    summary="Look up a Zestimate via GET (browser-friendly)",
+    description=(
+        "Convenience alias so you can test from a browser URL bar: "
+        "`GET /lookup?address=123+Main+St,+Seattle,+WA+98101`"
+    ),
+)
+async def lookup_get(
+    response: Response,
+    agent: AgentDep,
+    address: str = "",
+) -> LookupResponse:
+    if not address or len(address.strip()) < 3:
+        from fastapi import HTTPException
+
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="address query parameter is required (min 3 chars)",
+        )
+    started = time.monotonic()
+    result = await agent.aget(address.strip())
+    elapsed = time.monotonic() - started
+
+    metrics.observe_lookup(result, elapsed)
+
+    response.status_code = _STATUS_TO_HTTP.get(result.status, status.HTTP_200_OK)
+    if result.trace_id:
+        response.headers["X-Request-ID"] = result.trace_id
+    return LookupResponse.from_result(result, elapsed_ms=int(elapsed * 1000))
 
 
 # ─── Health / readiness ─────────────────────────────────────────

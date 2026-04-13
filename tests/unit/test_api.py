@@ -438,3 +438,141 @@ class TestObserveLookup:
         cap = REGISTRY.get_sample_value("zestimate_rentcast_cap")
         assert used == 7.0
         assert cap == 40.0
+
+
+# ─── GET /lookup ───────────────────────────────────────────────
+
+
+class TestLookupGet:
+    async def test_get_lookup_ok(
+        self, client: AsyncClient, stub_agent: _StubAgent
+    ) -> None:
+        stub_agent.queue(_ok_result(700_000))
+        r = await client.get("/lookup?address=123+Main+St,+Seattle,+WA+98101")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["ok"] is True
+        assert body["value"] == 700_000
+
+    async def test_get_lookup_missing_address(self, client: AsyncClient) -> None:
+        r = await client.get("/lookup")
+        assert r.status_code == 422
+
+    async def test_get_lookup_short_address(self, client: AsyncClient) -> None:
+        r = await client.get("/lookup?address=ab")
+        assert r.status_code == 422
+
+    async def test_get_lookup_strips_whitespace(
+        self, client: AsyncClient, stub_agent: _StubAgent
+    ) -> None:
+        stub_agent.queue(_ok_result())
+        r = await client.get("/lookup?address=+123+Main+St+")
+        assert r.status_code == 200
+        assert stub_agent.calls[-1]["address"] == "123 Main St"
+
+
+# ─── POST /zestimate alias ────────────────────────────────────
+
+
+class TestZestimateAlias:
+    async def test_zestimate_endpoint_works(
+        self, client: AsyncClient, stub_agent: _StubAgent
+    ) -> None:
+        stub_agent.queue(_ok_result(600_000))
+        r = await client.post(
+            "/zestimate", json={"address": "123 Main St, Seattle, WA 98101"}
+        )
+        assert r.status_code == 200
+        assert r.json()["value"] == 600_000
+
+
+# ─── POST /batch ───────────────────────────────────────────────
+
+
+class TestBatch:
+    async def test_batch_returns_results(
+        self, client: AsyncClient, stub_agent: _StubAgent
+    ) -> None:
+        stub_agent.queue(_ok_result(500_000))
+        stub_agent.queue(_ok_result(600_000))
+        r = await client.post(
+            "/batch",
+            json={"addresses": ["123 Main St", "456 Oak Ave"]},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["total"] == 2
+        assert body["ok_count"] == 2
+        assert len(body["results"]) == 2
+        assert body["results"][0]["value"] == 500_000
+        assert body["results"][1]["value"] == 600_000
+        assert body["elapsed_ms"] >= 0
+
+    async def test_batch_mixed_results(
+        self, client: AsyncClient, stub_agent: _StubAgent
+    ) -> None:
+        stub_agent.queue(_ok_result(500_000))
+        stub_agent.queue(_error_result(ZestimateStatus.NOT_FOUND))
+        r = await client.post(
+            "/batch",
+            json={"addresses": ["123 Main St", "999 Fake St"]},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["total"] == 2
+        assert body["ok_count"] == 1
+        assert body["results"][0]["ok"] is True
+        assert body["results"][1]["ok"] is False
+
+    async def test_batch_validation_empty(self, client: AsyncClient) -> None:
+        r = await client.post("/batch", json={"addresses": []})
+        assert r.status_code == 422
+
+    async def test_batch_skips_crosscheck_by_default(
+        self, client: AsyncClient, stub_agent: _StubAgent
+    ) -> None:
+        stub_agent.queue(_ok_result())
+        r = await client.post(
+            "/batch", json={"addresses": ["123 Main St"]}
+        )
+        assert r.status_code == 200
+        assert stub_agent.calls[-1]["skip_crosscheck"] is True
+
+
+# ─── Confidence breakdown ──────────────────────────────────────
+
+
+class TestConfidenceBreakdown:
+    async def test_ok_result_has_breakdown(
+        self, client: AsyncClient, stub_agent: _StubAgent
+    ) -> None:
+        stub_agent.queue(_ok_result())
+        r = await client.post("/lookup", json={"address": "123 Main St"})
+        body = r.json()
+        assert body["confidence_breakdown"] is not None
+        assert any("confidence" in s for s in body["confidence_breakdown"])
+        assert any("cross-check" in s for s in body["confidence_breakdown"])
+
+    async def test_error_result_no_breakdown(
+        self, client: AsyncClient, stub_agent: _StubAgent
+    ) -> None:
+        stub_agent.queue(_error_result(ZestimateStatus.NOT_FOUND))
+        r = await client.post("/lookup", json={"address": "999 Fake St"})
+        body = r.json()
+        assert body["confidence_breakdown"] is None
+
+    async def test_breakdown_notes_crosscheck_disagreement(
+        self, client: AsyncClient, stub_agent: _StubAgent
+    ) -> None:
+        result = _ok_result()
+        result.crosscheck = CrossCheck(
+            provider="rentcast",
+            estimate=300_000,
+            delta_pct=-40.0,
+            within_tolerance=False,
+        )
+        result.confidence = 0.475
+        stub_agent.queue(result)
+        r = await client.post("/lookup", json={"address": "123 Main St"})
+        body = r.json()
+        assert any("disagrees" in s for s in body["confidence_breakdown"])

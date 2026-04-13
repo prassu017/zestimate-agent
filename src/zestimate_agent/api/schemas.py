@@ -178,6 +178,10 @@ class LookupResponse(BaseModel):
         default=None,
         description="Human-readable error message when status is not 'ok'.",
     )
+    confidence_breakdown: list[str] | None = Field(
+        default=None,
+        description="Human-readable explanation of confidence score factors.",
+    )
 
     @classmethod
     def from_result(
@@ -202,6 +206,38 @@ class LookupResponse(BaseModel):
         if result.property_details is not None:
             pd = PropertyDetailsOut(**result.property_details.model_dump())
 
+        # Build confidence breakdown
+        breakdown: list[str] | None = None
+        if result.ok:
+            breakdown = []
+            conf = result.confidence
+            if conf >= 0.95:
+                breakdown.append("high confidence: all pipeline stages agreed")
+            elif conf >= 0.75:
+                breakdown.append("good confidence: minor uncertainty in one stage")
+            elif conf >= 0.5:
+                breakdown.append("moderate confidence: some stages reduced score")
+            else:
+                breakdown.append("low confidence: multiple factors reduced score")
+
+            if result.crosscheck is not None:
+                if result.crosscheck.skipped:
+                    breakdown.append(
+                        f"cross-check: skipped ({result.crosscheck.skipped_reason})"
+                    )
+                elif result.crosscheck.within_tolerance:
+                    breakdown.append(
+                        f"cross-check: {result.crosscheck.provider} agrees "
+                        f"({result.crosscheck.delta_pct:+.1f}%)"
+                    )
+                else:
+                    breakdown.append(
+                        f"cross-check: {result.crosscheck.provider} disagrees "
+                        f"({result.crosscheck.delta_pct:+.1f}%) — confidence halved"
+                    )
+            if result.cached:
+                breakdown.append("served from cache (< 6h old)")
+
         return cls(
             status=result.status,
             ok=result.ok,
@@ -221,7 +257,58 @@ class LookupResponse(BaseModel):
             elapsed_ms=elapsed_ms,
             trace_id=result.trace_id,
             error=result.error,
+            confidence_breakdown=breakdown,
         )
+
+
+class BatchRequest(BaseModel):
+    """Body for `POST /batch`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    addresses: list[str] = Field(
+        ...,
+        min_length=1,
+        max_length=50,
+        description="List of US property addresses (max 50).",
+    )
+    skip_crosscheck: bool = Field(default=True, description="Skip Rentcast to save budget.")
+    use_cache: bool = Field(default=True, description="Use the result cache.")
+
+
+class BatchResultItem(BaseModel):
+    """One result in a batch response."""
+
+    address: str
+    status: ZestimateStatus
+    ok: bool
+    value: int | None = None
+    zpid: str | None = None
+    matched_address: str | None = None
+    confidence: float = 0.0
+    error: str | None = None
+
+    @classmethod
+    def from_result(cls, address: str, result: ZestimateResult) -> BatchResultItem:
+        return cls(
+            address=address,
+            status=result.status,
+            ok=result.ok,
+            value=result.value,
+            zpid=result.zpid,
+            matched_address=result.matched_address,
+            confidence=result.confidence,
+            error=result.error,
+        )
+
+
+class BatchResponse(BaseModel):
+    """Body returned by `POST /batch`."""
+
+    total: int
+    ok_count: int
+    results: list[BatchResultItem]
+    elapsed_ms: int
 
 
 class HealthResponse(BaseModel):
