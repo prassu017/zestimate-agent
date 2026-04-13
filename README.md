@@ -47,7 +47,7 @@ A single Python package that ships **four interfaces** to the same core pipeline
 | **Python** | `ZestimateAgent.from_env().aget(addr)` | Embedding in another service |
 | **HTTP** | `POST /lookup` (FastAPI) | Production microservice, containerized |
 
-The pipeline is **pluggable at every layer** via Protocol types, so you can swap fetchers (ZenRows / ScraperAPI / BrightData / Playwright), cross-check providers (Rentcast / ATTOM), and cache backends (SQLite / memory / null) without touching the orchestrator.
+The pipeline is **pluggable at every layer** via Protocol types, so you can swap fetchers (ZenRows / ScraperAPI / BrightData / Playwright), cross-check providers (Rentcast / ATTOM), and cache backends (SQLite / Redis / memory / null) without touching the orchestrator.
 
 **Correctness contract:** `agent.aget()` **never raises**. Every failure mode — blocked fetch, ambiguous address, Zillow has no Zestimate, parse error — is mapped to a `ZestimateStatus` and returned in a `ZestimateResult`. Callers inspect `result.status`; they never have to wrap in try/except.
 
@@ -59,10 +59,10 @@ The pipeline is **pluggable at every layer** via Protocol types, so you can swap
 |---|---|
 | **Eval accuracy (synthetic + fixture, 33 cases)** | **100%** (33/33 exact match) |
 | **Live accuracy (Seattle condo, real Zillow)** | **exact** ($636,500, zpid 82362438) |
-| **Unit + integration tests passing** | **209 / 209** (+ 4 live integration skipped) |
-| **Mypy strict** | **clean** (29 source files) |
+| **Unit + integration tests passing** | **257 / 257** (+ 4 live integration skipped) |
+| **Mypy strict** | **clean** (34 source files) |
 | **Ruff (`E F I N UP B SIM RUF`)** | **clean** |
-| **Lines of production code** | ~3,800 |
+| **Lines of production code** | ~4,500 |
 | **Cold lookup latency (ScraperAPI)** | **~2-5 s** (render=false fast path) |
 | **Cache-hit latency (real server)** | **~16 ms** |
 | **CI** | GitHub Actions: lint + test (py3.11/3.12) + coverage + eval + Docker |
@@ -83,6 +83,11 @@ The eval harness has **three modes**:
 python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[api,dev]"
+
+# Optional extras:
+pip install -e ".[redis]"       # Redis cache backend
+pip install -e ".[otel]"        # OpenTelemetry traces
+pip install -e ".[playwright]"  # Playwright fallback fetcher
 ```
 
 ### Configure
@@ -124,6 +129,10 @@ asyncio.run(agent.aclose())
 zestimate eval --mode synthetic    # zero credits, runs every CI build
 zestimate eval --mode fixture      # zero credits, parser regression guard
 zestimate eval --mode all --json   # machine-readable for dashboards
+zestimate eval --dataset custom.yaml  # merge in your own YAML cases
+
+# Cache pre-warmer (nightly cron)
+zestimate prewarm --file addresses.txt --concurrency 5
 ```
 
 ---
@@ -176,6 +185,8 @@ zestimate eval --mode all --json   # machine-readable for dashboards
 ```
 
 Each layer is a `Protocol` the orchestrator depends on — tests inject fakes, real code uses the default implementations.
+
+**OpenTelemetry spans** wrap each stage (normalize → resolve → fetch → parse → validate), carrying the `trace_id` and stage-specific attributes. When the OTel SDK is installed (`pip install -e ".[otel]"`), every lookup produces a distributed trace; when absent, the span wrappers are no-ops with zero overhead.
 
 ---
 
@@ -256,9 +267,9 @@ The eval harness (`src/zestimate_agent/eval/`) is the answer to "how do we know 
 
 Reports emit as rich tables, JSON (for dashboards), or CSV (for spreadsheets). Per-category breakdown makes it trivial to spot "SFH is 100% but condo dropped to 94%".
 
-### Why SQLite for cache, not Redis
+### Cache backends: SQLite (default) or Redis
 
-Single-node simplicity. The target deployment is one container; a second process in the same pod for Redis adds operational surface area for zero benefit at this scale. The `ResultCache` is a Protocol, so swapping to Redis when we outgrow a single node is a 60-line class, not a refactor.
+SQLite (`CACHE_BACKEND=sqlite`) is the default — single-node simplicity with zero infrastructure. For multi-pod deployments, a **Redis backend** (`CACHE_BACKEND=redis`, `REDIS_URL=redis://...`) is also implemented. Both conform to the `ResultCache` Protocol, so switching is a config change. Install with `pip install -e ".[redis]"`.
 
 ### Test infrastructure
 
@@ -282,6 +293,15 @@ Structured logging via **structlog** with per-request `trace_id` propagated thro
 The `trace_id` is also returned as an `X-Request-ID` response header for correlation with load balancers and observability tooling.
 
 Set `LOG_FORMAT=json` for machine-parseable output (Docker image default), `LOG_FORMAT=pretty` for dev.
+
+### OpenTelemetry traces (optional)
+
+When `opentelemetry-api` + `opentelemetry-sdk` are installed (`pip install -e ".[otel]"`), every pipeline stage emits a span under the `zestimate_agent` tracer. Each span carries:
+
+- `zestimate.trace_id` — the same trace ID used in structlog and the `X-Request-ID` header
+- Stage-specific attributes: `address.canonical`, `resolve.zpid`, `fetch.fetcher`, `parse.value`, `validate.confidence`, etc.
+
+When the SDK is **not** installed, all span calls are no-ops with zero import or runtime overhead.
 
 ### Prometheus metrics (at `/metrics`)
 
@@ -378,18 +398,31 @@ The cache is where the unit economics live. At 0% hit rate you're paying credits
 
 ---
 
-## What I'd do next (concrete, not hand-wavy)
+## What's been built (formerly "What I'd do next")
 
-| # | Upgrade | Effort | Why |
+Every item from the original roadmap has been implemented:
+
+| # | Feature | Status | Details |
 |---|---|---|---|
-| 1 | **Redis cache backend** | ~60 lines | Required for > 1 pod; `ResultCache` Protocol is ready |
-| 2 | **Pydantic-based config for the eval dataset** | 1 day | So non-engineers can add cases by editing a YAML file |
-| 3 | **OpenTelemetry traces** | 2 days | Span per pipeline stage. We already emit per-stage Prometheus histograms and `trace_id` in contextvars, so this is mostly glue code |
-| 4 | **CDN in front of `/lookup`** with signed URLs | 3 days | Free extra cache layer; moves 90% of duplicate traffic off the origin |
-| 5 | **A `ZillowSitemap` pre-warmer** | 3 days | Nightly crawl of the top-N ZIPs to pre-populate the cache |
-| 6 | **Fetcher chain with automatic failover** | 1 day | Try unblocker first, fall back to Playwright on `FetchBlockedError`. The circuit breaker and Protocol are already in place |
+| 1 | **Redis cache backend** | **Built** | `CACHE_BACKEND=redis` + `REDIS_URL`, `ResultCache` Protocol, fakeredis tests |
+| 2 | **YAML eval dataset config** | **Built** | Pydantic-validated loader, `--dataset custom.yaml` CLI flag, example file |
+| 3 | **OpenTelemetry traces** | **Built** | Per-stage spans, no-op when SDK absent, zero overhead |
+| 4 | **CDN signed URL middleware** | **Built** | HMAC-SHA256 on `/lookup`, `SIGNED_URL_SECRET` config, 60s clock tolerance |
+| 5 | **Cache pre-warmer CLI** | **Built** | `zestimate prewarm --file/--sitemap-url`, bounded concurrency |
+| 6 | **Fetcher chain with automatic failover** | **Built** | Unblocker → Playwright on `FetchBlockedError`/`CircuitOpenError` |
+| 7 | **Circuit breaker** | **Built** | 3-state (closed/open/half_open), Prometheus gauge, `/readyz` exposure |
+| 8 | **Playwright fallback fetcher** | **Built** | Headless Chromium, stealth patches, lazy browser pooling |
+| 9 | **VCR-style test cassettes** | **Built** | Recorded API responses replayed in CI |
 
-What *is* built is the substrate they'd all sit on — every item above is a one-file change against existing Protocols and abstractions.
+### What I'd do next (if this were a real production system)
+
+| # | Upgrade | Why |
+|---|---|---|
+| 1 | **Multi-region Redis with read replicas** | Cache coherence across pods, <1ms reads at edge |
+| 2 | **OTel exporter to Jaeger/Tempo** | Visualize the full trace waterfall in Grafana |
+| 3 | **Webhook notifications on circuit breaker trips** | PagerDuty/Slack alert when ScraperAPI goes down |
+| 4 | **A/B test parser strategies** | Measure accuracy of fallback tiers against live traffic |
+| 5 | **Rate-limit by API key, not just IP** | Per-tenant quotas for a multi-tenant deployment |
 
 ---
 
@@ -401,25 +434,28 @@ What *is* built is the substrate they'd all sit on — every item above is a one
 
 src/zestimate_agent/
 ├── __init__.py
-├── agent.py            # orchestrator (never-raises, per-stage timers, trace_id propagation)
+├── agent.py            # orchestrator (never-raises, per-stage OTel spans + timers, trace_id propagation)
 ├── api/                # FastAPI layer
-│   ├── app.py          # factory + lifespan + middleware
+│   ├── app.py          # factory + lifespan + middleware + OpenAPI tags
 │   ├── routes.py       # /lookup, /zestimate, /healthz, /readyz, /version, /metrics
-│   ├── deps.py         # dependency injection + X-API-Key auth + rate limiter
+│   ├── deps.py         # DI + X-API-Key auth + rate limiter + signed URL verification
+│   ├── signed_url.py   # HMAC-SHA256 signed URL middleware for CDN caching
 │   ├── landing.py      # interactive demo UI (single-file, zero-build)
 │   ├── schemas.py      # wire types (PropertyDetailsOut, CrossCheckOut, LookupResponse)
 │   └── metrics.py      # Prometheus counters/histograms/gauges (incl. per-stage)
-├── cache.py            # daily-partitioned, TTL-bounded diskcache backend
-├── cli.py              # typer CLI (lookup, batch, eval, serve, cache-*, rentcast-status)
+├── cache.py            # daily-partitioned cache (SQLite, Redis, memory, null backends)
+├── cli.py              # typer CLI (lookup, batch, eval, serve, prewarm, cache-*, rentcast-status)
 ├── config.py           # pydantic-settings, all env vars
 ├── crosscheck.py       # Rentcast client + persistent monthly counter
 ├── errors.py           # typed error taxonomy
 ├── eval/               # correctness measurement
 │   ├── dataset.py      # 39 hand-curated cases across 11 categories
+│   ├── yaml_loader.py  # Pydantic-validated YAML dataset loader
 │   ├── runner.py       # synthetic/fixture/live modes, bounded concurrency
 │   ├── report.py       # stats + JSON + CSV + rich tables
 │   └── fixtures/       # recorded Zillow HTML for regression tests
 ├── fetch/              # pluggable fetchers (connection-pooled, circuit-breaker-protected)
+│   ├── chain.py        # automatic failover (unblocker → Playwright on blocked/circuit-open)
 │   ├── circuit_breaker.py  # 3-state breaker (closed/open/half_open) + Prometheus gauge
 │   ├── playwright.py   # headless Chromium fallback (stealth patches, lazy browser)
 │   └── unblocker.py    # ScraperAPI / ZenRows / BrightData (render-free fast path)
@@ -427,22 +463,31 @@ src/zestimate_agent/
 ├── models.py           # pydantic contracts (PropertyDetails, CrossCheck, ZestimateResult)
 ├── normalize.py        # usaddress-backed address parser
 ├── parse.py            # three-tier parser + property details extraction
+├── prewarm.py          # sitemap parser + cache pre-warmer (bounded concurrency)
 ├── resolve.py          # Zillow autocomplete -> zpid resolver (connection-pooled)
+├── tracing.py          # OpenTelemetry integration (per-stage spans, no-op when SDK absent)
 └── validate.py         # sanity + cross-check
 
 tests/
 ├── fixtures/
 │   └── cassettes/          # VCR-style recorded API responses (resolver + fetcher)
-├── unit/               # 209 tests, 29 source files, mypy strict, ruff clean
+├── unit/               # 257 tests, 34 source files, mypy strict, ruff clean
 │   ├── test_agent_cache.py
 │   ├── test_api.py
 │   ├── test_cache.py
-│   ├── test_circuit_breaker.py  # state machine + Prometheus + fetcher integration
+│   ├── test_cache_redis.py     # Redis backend via fakeredis
+│   ├── test_circuit_breaker.py # state machine + Prometheus + fetcher integration
 │   ├── test_crosscheck.py
 │   ├── test_eval.py
-│   ├── test_fetch_cassettes.py  # VCR fetch→parse pipeline tests
+│   ├── test_eval_yaml.py       # YAML dataset loader validation
+│   ├── test_fetch_cassettes.py # VCR fetch→parse pipeline tests
+│   ├── test_fetch_chain.py     # failover scenarios + protocol conformance
 │   ├── test_fetch_playwright.py # Playwright fetcher unit tests
+│   ├── test_never_raises.py    # agent invariant: every failure → ZestimateResult
+│   ├── test_prewarm.py         # cache pre-warmer tests
 │   ├── test_resolve_cassettes.py # VCR resolver replay tests
+│   ├── test_signed_url.py      # HMAC signed URL middleware tests
+│   ├── test_tracing.py         # OTel span tests (no-op + exception propagation)
 │   └── ...
 └── integration/
     └── test_resolver_live.py  # opt-in, needs RUN_LIVE_TESTS=1
