@@ -210,7 +210,7 @@ LANDING_HTML = """<!doctype html>
     resultEl.innerHTML = '';
     resultEl.appendChild(h('div', {}, [
       h('span', { class: 'spinner' }),
-      h('span', { text: 'Contacting Zillow via ScraperAPI… (usually 2-5s warm; cached hits <50ms)' })
+      h('span', { text: 'Contacting Zillow via ScraperAPI… (cached <100ms; cold lookups ~25-35s)' })
     ]));
   }
   function renderError(msg, raw) {
@@ -377,7 +377,9 @@ LANDING_HTML = """<!doctype html>
       });
       var body = null;
       try { body = await res.json(); } catch (e) { body = { error: 'non-JSON response', raw: await res.text() }; }
-      if (!res.ok && res.status >= 500) {
+      if (!res.ok && res.status === 502) {
+        renderError('Zillow fetch was blocked or timed out. On Vercel Hobby (10s limit), cold lookups often exceed the function timeout — ScraperAPI needs ~25-35s to render Zillow pages. Cached lookups work instantly. Try again (result may be cached now) or run locally for full functionality.', body);
+      } else if (!res.ok && res.status >= 500) {
         renderError('Server returned HTTP ' + res.status, body);
       } else if (body && body.error) {
         renderError(body.detail || body.error, body);
