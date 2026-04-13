@@ -43,12 +43,6 @@ os.environ.setdefault("CROSSCHECK_PROVIDER", "none")
 os.environ.setdefault("LOG_FORMAT", "json")
 os.environ.setdefault("LOG_LEVEL", "INFO")
 
-# Tighter HTTP settings for serverless — fail fast rather than burn
-# the entire function timeout on a slow ScraperAPI call.
-os.environ.setdefault("HTTP_TIMEOUT_SECONDS", "25")
-os.environ.setdefault("HTTP_MAX_RETRIES", "1")
-os.environ.setdefault("HTTP_BACKOFF_BASE_SECONDS", "1.0")
-
 # Public demo mode: the landing page at GET / calls POST /lookup via
 # same-origin fetch() without an API key header, so we force-clear any
 # ZESTIMATE_API_KEY that may be set in the Vercel dashboard. This is an

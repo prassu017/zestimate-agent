@@ -72,9 +72,9 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
 
     # ─── HTTP ───────────────────────────────────────────────────
-    http_timeout_seconds: float = 25.0
-    http_max_retries: int = 2
-    http_backoff_base_seconds: float = 1.0
+    http_timeout_seconds: float = 30.0
+    http_max_retries: int = 3
+    http_backoff_base_seconds: float = 1.5
 
     # ─── Circuit breaker ───────────────────────────────────────
     circuit_breaker_failure_threshold: int = Field(
