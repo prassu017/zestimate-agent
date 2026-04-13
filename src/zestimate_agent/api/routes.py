@@ -34,6 +34,7 @@ from zestimate_agent.api.schemas import (
     LookupResponse,
     VersionResponse,
 )
+from zestimate_agent.api.technical import TECHNICAL_HTML
 from zestimate_agent.crosscheck import get_usage_counter
 from zestimate_agent.logging import get_logger
 from zestimate_agent.models import ZestimateResult, ZestimateStatus
@@ -80,6 +81,23 @@ async def landing() -> HTMLResponse:
             # Short cache so iteration is fast; CDN can still cache briefly.
             "Cache-Control": "public, max-age=60",
         },
+    )
+
+
+# ─── Technical page ────────────────────────────────────────────
+
+
+@router.get(
+    "/technical",
+    response_class=HTMLResponse,
+    include_in_schema=False,
+    summary="Technical architecture page",
+)
+async def technical() -> HTMLResponse:
+    """Serve the technical architecture / PRD / schema documentation page."""
+    return HTMLResponse(
+        content=TECHNICAL_HTML,
+        headers={"Cache-Control": "public, max-age=60"},
     )
 
 

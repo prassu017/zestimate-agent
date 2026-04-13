@@ -157,6 +157,7 @@ LANDING_HTML = """<!doctype html>
       <div class="box"><div class="title">4 &mdash; Cross-check</div><div class="body">Rentcast AVM (budget-capped at 40/mo) &rarr; confidence halved on disagreement</div></div>
     </div>
     <div class="links">
+      <a href="/technical">Technical Architecture &rarr;</a>
       <a href="/docs">OpenAPI / Swagger UI &rarr;</a>
       <a href="/healthz">/healthz</a>
       <a href="/version">/version</a>
