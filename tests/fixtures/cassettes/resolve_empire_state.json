@@ -1,0 +1,30 @@
+{
+  "description": "Zillow autocomplete response for 350 5th Ave, New York, NY 10118 (Empire State Building)",
+  "recorded_at": "2026-04-12",
+  "request": {
+    "method": "GET",
+    "url": "https://www.zillowstatic.com/autocomplete/v3/suggestions",
+    "params": {"q": "350 5th Ave, New York, NY 10118"}
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "results": [
+        {
+          "display": "350 5th Ave, New York, NY 10118",
+          "resultType": "Address",
+          "metaData": {
+            "streetNumber": "350",
+            "streetName": "5th Ave",
+            "city": "New York",
+            "state": "NY",
+            "zipCode": "10118",
+            "zpid": 2096485434,
+            "lat": 40.7484,
+            "lng": -73.9857
+          }
+        }
+      ]
+    }
+  }
+}

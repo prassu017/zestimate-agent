@@ -1,0 +1,58 @@
+{
+  "description": "Zillow autocomplete response for 'Main St' — ambiguous, multiple cities",
+  "recorded_at": "2026-04-12",
+  "request": {
+    "method": "GET",
+    "url": "https://www.zillowstatic.com/autocomplete/v3/suggestions",
+    "params": {"q": "100 Main St, Portland, OR 97201"}
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "results": [
+        {
+          "display": "100 Main St, Portland, OR 97201",
+          "resultType": "Address",
+          "metaData": {
+            "streetNumber": "100",
+            "streetName": "Main St",
+            "city": "Portland",
+            "state": "OR",
+            "zipCode": "97201",
+            "zpid": 53929338,
+            "lat": 45.5155,
+            "lng": -122.6789
+          }
+        },
+        {
+          "display": "100 Main St, Vancouver, WA 98660",
+          "resultType": "Address",
+          "metaData": {
+            "streetNumber": "100",
+            "streetName": "Main St",
+            "city": "Vancouver",
+            "state": "WA",
+            "zipCode": "98660",
+            "zpid": 72103456,
+            "lat": 45.6387,
+            "lng": -122.6615
+          }
+        },
+        {
+          "display": "100 Main St, Lake Oswego, OR 97034",
+          "resultType": "Address",
+          "metaData": {
+            "streetNumber": "100",
+            "streetName": "Main St",
+            "city": "Lake Oswego",
+            "state": "OR",
+            "zipCode": "97034",
+            "zpid": 48271093,
+            "lat": 45.4207,
+            "lng": -122.6707
+          }
+        }
+      ]
+    }
+  }
+}

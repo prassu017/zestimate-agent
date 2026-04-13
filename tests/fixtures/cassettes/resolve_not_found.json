@@ -1,0 +1,15 @@
+{
+  "description": "Zillow autocomplete response for a nonexistent address",
+  "recorded_at": "2026-04-12",
+  "request": {
+    "method": "GET",
+    "url": "https://www.zillowstatic.com/autocomplete/v3/suggestions",
+    "params": {"q": "123456 Nonexistent Street, Nowhere, XY 00000"}
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "results": []
+    }
+  }
+}

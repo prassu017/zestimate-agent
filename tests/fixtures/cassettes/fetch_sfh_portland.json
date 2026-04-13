@@ -1,0 +1,14 @@
+{
+  "description": "ScraperAPI response for a Portland SFH — synthetic __NEXT_DATA__ blob",
+  "recorded_at": "2026-04-12",
+  "request": {
+    "method": "GET",
+    "url": "http://api.scraperapi.com/",
+    "params": {"url": "https://www.zillow.com/homedetails/61400567_zpid/"}
+  },
+  "response": {
+    "status": 200,
+    "content_type": "text/html"
+  },
+  "notes": "Synthetic fixture that mirrors real Zillow __NEXT_DATA__ shape for a single-family home"
+}

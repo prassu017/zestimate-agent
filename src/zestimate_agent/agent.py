@@ -31,6 +31,7 @@ from zestimate_agent.errors import (
 )
 from zestimate_agent.fetch.base import Fetcher
 from zestimate_agent.fetch.circuit_breaker import CircuitOpenError
+from zestimate_agent.fetch.playwright import build_playwright_fetcher
 from zestimate_agent.fetch.unblocker import build_unblocker_fetcher
 from zestimate_agent.logging import get_logger
 from zestimate_agent.models import NormalizedAddress, ZestimateResult, ZestimateStatus
@@ -98,7 +99,10 @@ class ZestimateAgent:
 
     def _get_fetcher(self) -> Fetcher:
         if self._fetcher is None:
-            self._fetcher = build_unblocker_fetcher()
+            if self._settings.fetcher_primary == "playwright":
+                self._fetcher = build_playwright_fetcher()
+            else:
+                self._fetcher = build_unblocker_fetcher()
         return self._fetcher
 
     def _get_crosschecker(self) -> RentcastClient | None:

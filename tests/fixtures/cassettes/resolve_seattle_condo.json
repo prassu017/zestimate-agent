@@ -1,0 +1,45 @@
+{
+  "description": "Zillow autocomplete response for 500 5th Ave W #705, Seattle, WA 98119",
+  "recorded_at": "2026-04-12",
+  "request": {
+    "method": "GET",
+    "url": "https://www.zillowstatic.com/autocomplete/v3/suggestions",
+    "params": {"q": "500 5th Ave W, Seattle, WA 98119"}
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "results": [
+        {
+          "display": "500 5th Ave W #705, Seattle, WA 98119",
+          "resultType": "Address",
+          "metaData": {
+            "streetNumber": "500",
+            "streetName": "5th Ave W",
+            "unitNumber": "705",
+            "city": "Seattle",
+            "state": "WA",
+            "zipCode": "98119",
+            "zpid": 82362438,
+            "lat": 47.6237,
+            "lng": -122.3626
+          }
+        },
+        {
+          "display": "500 5th Ave W, Seattle, WA 98119",
+          "resultType": "Address",
+          "metaData": {
+            "streetNumber": "500",
+            "streetName": "5th Ave W",
+            "city": "Seattle",
+            "state": "WA",
+            "zipCode": "98119",
+            "zpid": 48814099,
+            "lat": 47.6237,
+            "lng": -122.3626
+          }
+        }
+      ]
+    }
+  }
+}

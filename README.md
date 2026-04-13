@@ -57,21 +57,21 @@ The pipeline is **pluggable at every layer** via Protocol types, so you can swap
 
 | Metric | Value |
 |---|---|
-| **Eval accuracy (synthetic + fixture, 8 cases)** | **100%** (8/8 exact match) |
+| **Eval accuracy (synthetic + fixture, 33 cases)** | **100%** (33/33 exact match) |
 | **Live accuracy (Seattle condo, real Zillow)** | **exact** ($636,500, zpid 82362438) |
-| **Unit + integration tests passing** | **180 / 180** (+ 4 live integration skipped) |
-| **Mypy strict** | **clean** (27 source files) |
+| **Unit + integration tests passing** | **209 / 209** (+ 4 live integration skipped) |
+| **Mypy strict** | **clean** (29 source files) |
 | **Ruff (`E F I N UP B SIM RUF`)** | **clean** |
-| **Lines of production code** | ~3,200 |
+| **Lines of production code** | ~3,800 |
 | **Cold lookup latency (ScraperAPI)** | **~2-5 s** (render=false fast path) |
 | **Cache-hit latency (real server)** | **~16 ms** |
 | **CI** | GitHub Actions: lint + test (py3.11/3.12) + coverage + eval + Docker |
 
 The eval harness has **three modes**:
 
-- **synthetic** — inline HTML exercises the parser over hand-authored edge cases. Zero credits. 7 cases: SFH / condo / $45M luxury / `__NEXT_DATA__` / HTML-regex fallback / JSON-regex fallback / no-Zestimate / blocked-page.
+- **synthetic** — inline HTML exercises the parser over hand-authored edge cases. Zero credits. 32 cases: SFH (starter/mid/mcmansion) / condo (studio/penthouse/co-op) / townhouse / multi-family / manufactured / luxury ($5M/$45M/$250M) / rural / new construction / rental / recently sold / off-market / sanity boundary (floor pass/fail, ceiling fail) / parser fallback tiers (HTML regex, JSON regex) / no-Zestimate (null + zero) / blocked page variants (captcha/access-denied/empty).
 - **fixture** — replays a pre-recorded Zillow page against the real parser. Zero credits. 1 case (Seattle condo).
-- **live** — hits real Zillow + Rentcast. Budget-gated: refuses `--mode live` without `--limit`, refuses `--limit > 3` without `--force`.
+- **live** — hits real Zillow + Rentcast. Budget-gated: refuses `--mode live` without `--limit`, refuses `--limit > 3` without `--force`. 6 cases covering live canary, commercial/institutional properties, messy input, and not-found.
 
 ---
 
@@ -153,10 +153,10 @@ zestimate eval --mode all --json   # machine-readable for dashboards
    └──────┬─────┘
           │
           ▼
-   ┌────────────┐   Primary: WAF-bypass unblocker (ZenRows / ScraperAPI / BrightData)
-   │   Fetch    │   Retry w/ tenacity, exponential backoff, jittered
-   │ (Protocol) │   Maps HTTP 403/429 → FetchBlockedError (→ BLOCKED status)
-   └──────┬─────┘
+   ┌────────────┐   Primary: WAF-bypass unblocker (ScraperAPI / ZenRows / BrightData)
+   │   Fetch    │   Fallback: headless Playwright (optional)
+   │ (Protocol) │   Circuit breaker: fail-fast after N consecutive failures
+   └──────┬─────┘   Retry w/ tenacity, exponential backoff
           │ HTML
           ▼
    ┌────────────┐   Three-tier parser (in order):
@@ -203,7 +203,7 @@ Zillow's Next.js app server-side-renders the `__NEXT_DATA__` blob into the initi
 
 The hard problem with Zillow isn't extracting the Zestimate — it's getting past Cloudflare / PerimeterX. The **Fetcher** is a `Protocol` so the orchestrator doesn't know or care whether HTML came from ScraperAPI, ZenRows, BrightData, or Playwright. Swapping providers is a config change; failing over from one to another is a `try/except FetchBlockedError`.
 
-I **skipped** the Playwright fallback (it was Step 5 in the original plan). Rationale: unblocker credits at ~$0.002/req are dramatically cheaper than running headless Chrome at scale, and for a 99% correctness target you don't need Playwright if your primary fetcher is good. Adding it back is a one-file change against the existing Protocol.
+A **Playwright fallback fetcher** (`FETCHER_PRIMARY=playwright`) is also implemented for the pathological 1% the unblocker can't get through. It launches headless Chromium with stealth patches, reuses a persistent browser context across calls (connection pooling equivalent), and integrates the circuit breaker. Requires the optional `playwright` dependency group (`pip install -e ".[playwright]" && playwright install chromium`).
 
 ### Result cache, not HTML cache
 
@@ -218,6 +218,10 @@ Cache key: `v1:{canonical_address_lowercase}:{YYYY-MM-DD}`
 **Only `OK`, `NO_ZESTIMATE`, and `NOT_FOUND` are cached** — those are stable terminal states. `BLOCKED` / `ERROR` / `AMBIGUOUS` are never cached because they're retry-worthy.
 
 On a cache hit the stored result's `trace_id` is **refreshed** so every request is still uniquely traceable — only the payload is reused.
+
+### Circuit breaker for upstream fetchers
+
+Each fetcher instance carries its own `CircuitBreaker` (closed/open/half_open). After N consecutive failures (default 5), the breaker opens and immediately rejects new requests with `CircuitOpenError` — no retries, no timeout wait. After a configurable recovery timeout (default 30s), one probe request is allowed through; if it succeeds, the circuit closes. This prevents cascading latency when ScraperAPI is down and saves credits that would otherwise be burned on doomed retries. The current state is exposed via a Prometheus gauge (`zestimate_circuit_breaker_state`) and the `/readyz` endpoint.
 
 ### Budget-aware cross-check
 
@@ -259,6 +263,7 @@ Single-node simplicity. The target deployment is one container; a second process
 ### Test infrastructure
 
 - **Runtime-checkable Protocols** + dataclass fakes for every dependency. No mocking framework needed.
+- **VCR-style cassettes** — recorded Zillow autocomplete and fetcher responses replayed in CI. Catches schema drift without burning credits. Tests in `test_resolve_cassettes.py` and `test_fetch_cassettes.py`.
 - **respx** for httpx-level stubs of Zillow/Rentcast (see `test_resolve.py`, `test_crosscheck.py`).
 - **Real HTML fixtures** in `src/zestimate_agent/eval/fixtures/` for parser regression tests.
 - **Dependency injection** all the way down — `ZestimateAgent(settings, normalizer=..., resolver=..., fetcher=..., cache=..., crosschecker=...)` lets every test construct exactly the agent shape it needs.
@@ -289,6 +294,7 @@ Set `LOG_FORMAT=json` for machine-parseable output (Docker image default), `LOG_
 | `zestimate_crosscheck_total` | counter | `outcome` | ok / skipped / error |
 | `zestimate_rentcast_usage` | gauge | — | Current-month Rentcast calls used |
 | `zestimate_rentcast_cap` | gauge | — | Configured cap (40) |
+| `zestimate_circuit_breaker_state` | gauge | `provider` | 0=closed, 1=open, 2=half_open |
 | `zestimate_http_requests_total` | counter | `path,method,code` | Raw HTTP counter |
 | `zestimate_http_request_duration_seconds` | histogram | `path,method` | HTTP latency |
 
@@ -297,7 +303,7 @@ Histogram buckets are tuned for "fast when cached (< 100ms), slow when live (1s 
 ### Health endpoints
 
 - `GET /healthz` — liveness, always 200 if the process is alive
-- `GET /readyz` — readiness, reports `agent`, `cache_backend`, and Rentcast cap status in `checks{}`
+- `GET /readyz` — readiness, reports `agent`, `cache_backend`, `circuit_breaker` state, and Rentcast cap in `checks{}`
 - `GET /version` — package version
 
 ---
@@ -377,15 +383,13 @@ The cache is where the unit economics live. At 0% hit rate you're paying credits
 | # | Upgrade | Effort | Why |
 |---|---|---|---|
 | 1 | **Redis cache backend** | ~60 lines | Required for > 1 pod; `ResultCache` Protocol is ready |
-| 2 | **VCR-style replay for resolver tests** | 1 day | Currently mocks httpx at respx; replaying real Zillow autocomplete responses would catch schema drift |
-| 3 | **Playwright fallback fetcher** | 2 days | For the pathological 1% the unblocker can't get through; already scaffolded as a Protocol |
-| 4 | **Circuit breaker for ScraperAPI** | 1 day | Fast-fail after N consecutive failures instead of retrying into a dead provider |
-| 5 | **Pydantic-based config for the eval dataset** | 1 day | So non-engineers can add cases by editing a YAML file |
-| 6 | **OpenTelemetry traces** | 2 days | Span per pipeline stage. We already emit per-stage Prometheus histograms and `trace_id` in contextvars, so this is mostly glue code |
-| 7 | **CDN in front of `/lookup`** with signed URLs | 3 days | Free extra cache layer; moves 90% of duplicate traffic off the origin |
-| 8 | **A `ZillowSitemap` pre-warmer** | 3 days | Nightly crawl of the top-N ZIPs to pre-populate the cache |
+| 2 | **Pydantic-based config for the eval dataset** | 1 day | So non-engineers can add cases by editing a YAML file |
+| 3 | **OpenTelemetry traces** | 2 days | Span per pipeline stage. We already emit per-stage Prometheus histograms and `trace_id` in contextvars, so this is mostly glue code |
+| 4 | **CDN in front of `/lookup`** with signed URLs | 3 days | Free extra cache layer; moves 90% of duplicate traffic off the origin |
+| 5 | **A `ZillowSitemap` pre-warmer** | 3 days | Nightly crawl of the top-N ZIPs to pre-populate the cache |
+| 6 | **Fetcher chain with automatic failover** | 1 day | Try unblocker first, fall back to Playwright on `FetchBlockedError`. The circuit breaker and Protocol are already in place |
 
-I intentionally did not build these during the take-home -- each one is real engineering I'd rather discuss in person than hand-wave. What *is* built is the substrate they'd all sit on.
+What *is* built is the substrate they'd all sit on — every item above is a one-file change against existing Protocols and abstractions.
 
 ---
 
@@ -411,11 +415,13 @@ src/zestimate_agent/
 ├── crosscheck.py       # Rentcast client + persistent monthly counter
 ├── errors.py           # typed error taxonomy
 ├── eval/               # correctness measurement
-│   ├── dataset.py      # 15 hand-curated cases across 11 categories
+│   ├── dataset.py      # 39 hand-curated cases across 11 categories
 │   ├── runner.py       # synthetic/fixture/live modes, bounded concurrency
 │   ├── report.py       # stats + JSON + CSV + rich tables
 │   └── fixtures/       # recorded Zillow HTML for regression tests
-├── fetch/              # pluggable fetchers (connection-pooled)
+├── fetch/              # pluggable fetchers (connection-pooled, circuit-breaker-protected)
+│   ├── circuit_breaker.py  # 3-state breaker (closed/open/half_open) + Prometheus gauge
+│   ├── playwright.py   # headless Chromium fallback (stealth patches, lazy browser)
 │   └── unblocker.py    # ScraperAPI / ZenRows / BrightData (render-free fast path)
 ├── logging.py          # structlog config (contextvars-based trace_id)
 ├── models.py           # pydantic contracts (PropertyDetails, CrossCheck, ZestimateResult)
@@ -425,12 +431,18 @@ src/zestimate_agent/
 └── validate.py         # sanity + cross-check
 
 tests/
-├── unit/               # 180 tests, 27 source files, mypy strict, ruff clean
+├── fixtures/
+│   └── cassettes/          # VCR-style recorded API responses (resolver + fetcher)
+├── unit/               # 209 tests, 29 source files, mypy strict, ruff clean
 │   ├── test_agent_cache.py
-│   ├── test_api.py         (24)
-│   ├── test_cache.py       (25)
-│   ├── test_crosscheck.py  (17)
-│   ├── test_eval.py        (23)
+│   ├── test_api.py
+│   ├── test_cache.py
+│   ├── test_circuit_breaker.py  # state machine + Prometheus + fetcher integration
+│   ├── test_crosscheck.py
+│   ├── test_eval.py
+│   ├── test_fetch_cassettes.py  # VCR fetch→parse pipeline tests
+│   ├── test_fetch_playwright.py # Playwright fetcher unit tests
+│   ├── test_resolve_cassettes.py # VCR resolver replay tests
 │   └── ...
 └── integration/
     └── test_resolver_live.py  # opt-in, needs RUN_LIVE_TESTS=1
