@@ -75,6 +75,16 @@ class Settings(BaseSettings):
     http_max_retries: int = 3
     http_backoff_base_seconds: float = 1.5
 
+    # ─── Circuit breaker ───────────────────────────────────────
+    circuit_breaker_failure_threshold: int = Field(
+        default=5,
+        description="Consecutive failures before the circuit breaker opens.",
+    )
+    circuit_breaker_recovery_timeout: float = Field(
+        default=30.0,
+        description="Seconds to wait in OPEN state before probing with a test request.",
+    )
+
     # ─── Observability ──────────────────────────────────────────
     log_level: LogLevel = "INFO"
     log_format: LogFormat = "pretty"

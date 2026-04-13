@@ -30,6 +30,7 @@ from zestimate_agent.errors import (
     ZestimateError,
 )
 from zestimate_agent.fetch.base import Fetcher
+from zestimate_agent.fetch.circuit_breaker import CircuitOpenError
 from zestimate_agent.fetch.unblocker import build_unblocker_fetcher
 from zestimate_agent.logging import get_logger
 from zestimate_agent.models import NormalizedAddress, ZestimateResult, ZestimateStatus
@@ -213,6 +214,16 @@ class ZestimateAgent:
             fetcher = self._get_fetcher()
             fetch_result = await fetcher.fetch(resolved.url)
             _stage_ms("fetch", t0)
+        except CircuitOpenError as e:
+            log.warning("circuit breaker open — failing fast", error=str(e))
+            return ZestimateResult(
+                status=ZestimateStatus.BLOCKED,
+                zpid=resolved.zpid,
+                matched_address=resolved.matched_address,
+                zillow_url=resolved.url,
+                error=f"circuit breaker open: {e}",
+                trace_id=trace_id,
+            )
         except FetchBlockedError as e:
             return ZestimateResult(
                 status=ZestimateStatus.BLOCKED,

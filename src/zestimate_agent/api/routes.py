@@ -167,6 +167,13 @@ async def readyz(
     checks["agent"] = "ok" if agent_ok else "missing"
     checks["cache_backend"] = settings.cache_backend
 
+    # Circuit breaker state (if the fetcher exposes one).
+    agent_inst = getattr(request.app.state, "agent", None)
+    fetcher = getattr(agent_inst, "_fetcher", None)
+    breaker = getattr(fetcher, "_breaker", None)
+    if breaker is not None:
+        checks["circuit_breaker"] = breaker.state.name.lower()
+
     try:
         snap = get_usage_counter().snapshot()
         checks["rentcast_used"] = snap.used

@@ -32,6 +32,11 @@ from tenacity import (
 
 from zestimate_agent.config import get_settings
 from zestimate_agent.errors import FetchBlockedError, FetchError, FetchTimeoutError
+from zestimate_agent.fetch.circuit_breaker import (
+    BREAKER_TRIP_ERRORS,
+    CircuitBreaker,
+    CircuitOpenError,
+)
 from zestimate_agent.logging import get_logger
 from zestimate_agent.models import FetchResult
 
@@ -76,12 +81,18 @@ class UnblockerFetcherBase:
         *,
         timeout: float | None = None,
         client: httpx.AsyncClient | None = None,
+        circuit_breaker: CircuitBreaker | None = None,
     ) -> None:
         settings = get_settings()
         self._api_key = api_key
         self._timeout = timeout or settings.http_timeout_seconds
         self._ext_client = client
         self._own_client: httpx.AsyncClient | None = None
+        self._breaker = circuit_breaker or CircuitBreaker(
+            self.name,
+            failure_threshold=settings.circuit_breaker_failure_threshold,
+            recovery_timeout=settings.circuit_breaker_recovery_timeout,
+        )
 
     def _params(self, url: str) -> dict[str, Any]:  # pragma: no cover - abstract
         raise NotImplementedError
@@ -104,6 +115,11 @@ class UnblockerFetcherBase:
     # ─── Retry wrapper ──────────────────────────────────────────
 
     async def _fetch_with_retry(self, url: str) -> FetchResult:
+        if not self._breaker.allow_request():
+            raise CircuitOpenError(
+                f"{self.name} circuit breaker is OPEN — failing fast"
+            )
+
         settings = get_settings()
 
         @retry(
@@ -120,7 +136,13 @@ class UnblockerFetcherBase:
         async def _attempt() -> FetchResult:
             return await self._fetch_once(url)
 
-        return await _attempt()
+        try:
+            result = await _attempt()
+            self._breaker.record_success()
+            return result
+        except BREAKER_TRIP_ERRORS:
+            self._breaker.record_failure()
+            raise
 
     async def _fetch_once(self, url: str) -> FetchResult:
         client = self._get_client()
