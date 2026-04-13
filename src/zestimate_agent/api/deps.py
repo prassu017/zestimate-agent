@@ -121,3 +121,53 @@ def rate_limit(request: Request) -> None:
 def reset_rate_limiter() -> None:
     """Clear all rate-limit buckets. Used in tests."""
     _RATE_BUCKETS.clear()
+
+
+# ─── Signed URL verification ─────────────────────────────────
+
+
+def verify_signed_url(
+    request: Request,
+    settings: SettingsDep,
+) -> None:
+    """Validate HMAC-signed URL params when ``SIGNED_URL_SECRET`` is set.
+
+    When the secret is unset, this is a no-op. When set, every request
+    must include ``?sig=<hex>&exp=<unix_ts>`` query params.
+    """
+    from zestimate_agent.api.signed_url import _compute_signature
+
+    secret = settings.signed_url_secret
+    if secret is None:
+        return
+
+    sig = request.query_params.get("sig")
+    exp = request.query_params.get("exp")
+
+    if not sig or not exp:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="missing sig or exp query parameters",
+        )
+
+    try:
+        expiry_ts = int(exp)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="invalid exp parameter",
+        ) from e
+
+    now = int(time.time())
+    if expiry_ts + 60 < now:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="signed URL expired",
+        )
+
+    expected = _compute_signature(secret, request.method, request.url.path, exp)
+    if not hmac.compare_digest(sig, expected):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="invalid signature",
+        )

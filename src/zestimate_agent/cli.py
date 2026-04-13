@@ -30,6 +30,7 @@ from zestimate_agent.eval import (
     EvalMode,
     EvalReport,
     EvalRunConfig,
+    load_yaml_dataset,
     run_eval,
 )
 from zestimate_agent.logging import configure_logging
@@ -248,6 +249,10 @@ def eval_cmd(
         "--mode",
         help="Eval mode: synthetic | fixture | live | all.",
     ),
+    dataset_file: typing.Annotated[Path | None, typer.Option(
+        "--dataset",
+        help="YAML file with additional eval cases to merge into the built-in dataset.",
+    )] = None,
     categories: str = typer.Option(
         "",
         "--categories",
@@ -316,6 +321,19 @@ def eval_cmd(
         dataset = tuple(c for c in DEFAULT_DATASET if c.mode != EvalMode.LIVE)
     else:
         dataset = DEFAULT_DATASET
+
+    # Merge in YAML dataset if provided
+    if dataset_file is not None:
+        if not dataset_file.exists():
+            err_console.print(f"[red]dataset file not found: {dataset_file}[/red]")
+            raise typer.Exit(2)
+        try:
+            yaml_cases = load_yaml_dataset(dataset_file)
+            err_console.print(f"[cyan]loaded {len(yaml_cases)} cases from {dataset_file}[/cyan]")
+            dataset = dataset + yaml_cases
+        except Exception as e:
+            err_console.print(f"[red]failed to load YAML dataset: {e}[/red]")
+            raise typer.Exit(2) from e
 
     cfg = EvalRunConfig(
         mode=run_mode,
@@ -596,6 +614,75 @@ def _print_pretty(result: ZestimateResult) -> None:
     if result.matched_address:
         msg += f"\naddress: {result.matched_address}"
     console.print(Panel(msg, title="[bold]Zestimate result[/bold]", expand=False))
+
+
+@app.command("prewarm")
+def prewarm(
+    file: typing.Annotated[Path | None, typer.Option(
+        "--file", "-f", help="Text file with one address per line.",
+    )] = None,
+    sitemap_url: str | None = typer.Option(
+        None,
+        "--sitemap-url",
+        help="Zillow sitemap XML URL to extract property URLs from.",
+    ),
+    limit: int = typer.Option(100, "--limit", "-n", help="Max addresses to prewarm."),
+    concurrency: int = typer.Option(3, "--concurrency", "-c", help="Parallel lookups."),
+) -> None:
+    """Pre-warm the cache by looking up addresses from a file or sitemap.
+
+    \b
+    Sources (pick one):
+      --file         text file with one address per line
+      --sitemap-url  Zillow sitemap XML URL (extracts property URLs)
+    """
+    from zestimate_agent.prewarm import fetch_sitemap_urls, prewarm_from_addresses
+
+    if file is None and sitemap_url is None:
+        err_console.print("[red]provide --file or --sitemap-url[/red]")
+        raise typer.Exit(2)
+
+    addresses: list[str] = []
+
+    if file is not None:
+        if not file.exists():
+            err_console.print(f"[red]file not found: {file}[/red]")
+            raise typer.Exit(2)
+        addresses = [
+            line.strip()
+            for line in file.read_text().splitlines()
+            if line.strip()
+        ][:limit]
+        err_console.print(f"[cyan]loaded {len(addresses)} addresses from {file}[/cyan]")
+
+    if sitemap_url is not None:
+        err_console.print(f"[cyan]fetching sitemap: {sitemap_url}[/cyan]")
+        urls = asyncio.run(fetch_sitemap_urls(sitemap_url, limit=limit))
+        err_console.print(f"[cyan]extracted {len(urls)} property URLs[/cyan]")
+        # Convert URLs to addresses — the agent expects addresses, but
+        # we can pass the URL directly since the resolver handles it.
+        addresses.extend(urls)
+
+    if not addresses:
+        err_console.print("[yellow]no addresses to prewarm[/yellow]")
+        raise typer.Exit(0)
+
+    agent = ZestimateAgent.from_env()
+    try:
+        stats = asyncio.run(
+            prewarm_from_addresses(addresses, agent, concurrency=concurrency)
+        )
+    finally:
+        asyncio.run(agent.aclose())
+
+    table = Table(show_header=False, box=None, pad_edge=False)
+    table.add_column(style="bold", width=14)
+    table.add_column()
+    table.add_row("Total", str(stats.total))
+    table.add_row("OK", f"[green]{stats.ok}[/green]")
+    table.add_row("Cached", f"[cyan]{stats.cached}[/cyan]")
+    table.add_row("Errors", f"[red]{stats.errors}[/red]" if stats.errors else "0")
+    console.print(Panel(table, title="[bold]Prewarm results[/bold]", expand=False))
 
 
 if __name__ == "__main__":

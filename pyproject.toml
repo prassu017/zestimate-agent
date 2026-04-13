@@ -29,6 +29,7 @@ dependencies = [
     "usaddress>=0.5.10",
     "selectolax>=0.3.21",
     "python-dotenv>=1.0",
+    "pyyaml>=6.0",
     "diskcache>=5.6",
     # API layer — kept in core (not optional) so serverless platforms like
     # Vercel that install *only* from `[project.dependencies]` via `uv`
@@ -43,6 +44,13 @@ playwright = [
     "playwright>=1.42",
     "playwright-stealth>=1.0.6",
 ]
+redis = [
+    "redis>=5.0",
+]
+otel = [
+    "opentelemetry-api>=1.24",
+    "opentelemetry-sdk>=1.24",
+]
 # Kept as an empty alias so `pip install .[api]` and the Dockerfile
 # `pip install '.[api]'` invocations keep working. The actual packages
 # now live in base `dependencies` above.
@@ -56,9 +64,11 @@ dev = [
     "mypy>=1.9",
     "types-requests",
     "respx>=0.21",
+    "fakeredis>=2.21",
+    "pyyaml>=6.0",
 ]
 all = [
-    "zestimate-agent[playwright,api,dev]",
+    "zestimate-agent[playwright,redis,otel,api,dev]",
 ]
 
 [project.scripts]

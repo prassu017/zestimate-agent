@@ -17,7 +17,13 @@ from fastapi.responses import HTMLResponse
 from zestimate_agent import __version__
 from zestimate_agent.agent import ZestimateAgent
 from zestimate_agent.api import metrics
-from zestimate_agent.api.deps import SettingsDep, get_agent, rate_limit, require_api_key
+from zestimate_agent.api.deps import (
+    SettingsDep,
+    get_agent,
+    rate_limit,
+    require_api_key,
+    verify_signed_url,
+)
 from zestimate_agent.api.landing import LANDING_HTML
 from zestimate_agent.api.schemas import (
     HealthResponse,
@@ -80,11 +86,12 @@ async def landing() -> HTMLResponse:
 @router.post(
     "/lookup",
     response_model=LookupResponse,
-    dependencies=[Depends(require_api_key), Depends(rate_limit)],
+    dependencies=[Depends(require_api_key), Depends(verify_signed_url), Depends(rate_limit)],
     tags=["lookup"],
     responses={
         200: {"description": "Lookup succeeded (check `status` for ok/no_zestimate)."},
         401: {"description": "Missing or invalid API key."},
+        403: {"description": "Invalid or expired signed URL (when SIGNED_URL_SECRET is set)."},
         404: {"description": "Address did not resolve to a Zillow property."},
         409: {"description": "Address resolved to multiple candidates."},
         422: {"description": "Request body validation failed."},
@@ -136,7 +143,7 @@ router.add_api_route(
     lookup,
     methods=["POST"],
     response_model=LookupResponse,
-    dependencies=[Depends(require_api_key), Depends(rate_limit)],
+    dependencies=[Depends(require_api_key), Depends(verify_signed_url), Depends(rate_limit)],
     tags=["lookup"],
     summary="Look up a Zestimate (alias for /lookup)",
     include_in_schema=False,  # avoid duplicate in OpenAPI docs

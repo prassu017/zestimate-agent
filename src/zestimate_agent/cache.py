@@ -235,6 +235,67 @@ class DiskResultCache:
         self._cache.close()
 
 
+# ─── Redis cache ───────────────────────────────────────────────
+
+
+class RedisResultCache:
+    """Production cache backed by Redis.
+
+    Uses the same key layout and serialization as DiskResultCache so
+    switching backends is transparent. Requires the `redis` package.
+    """
+
+    def __init__(self, url: str, *, ttl_seconds: int = 21600) -> None:
+        import redis
+
+        self.stats = CacheStats()
+        self._ttl = ttl_seconds
+        self._r: redis.Redis = redis.from_url(url, decode_responses=True)
+
+    def get(self, canonical: str) -> ZestimateResult | None:
+        key = _make_key(canonical)
+        raw = self._r.get(key)
+        if raw is None:
+            self.stats.misses += 1
+            return None
+        try:
+            result = _deserialize(raw)
+        except Exception as e:
+            log.warning("redis cache decode failed — evicting", key=key, error=str(e))
+            self._r.delete(key)
+            self.stats.evictions += 1
+            self.stats.misses += 1
+            return None
+        self.stats.hits += 1
+        return result
+
+    def set(self, canonical: str, result: ZestimateResult) -> None:
+        if result.status not in CACHEABLE_STATUSES:
+            return
+        key = _make_key(canonical)
+        payload = _serialize(result)
+        self._r.setex(key, self._ttl, payload)
+        self.stats.writes += 1
+
+    def clear(self) -> int:
+        pattern = f"{CACHE_SCHEMA_VERSION}:*"
+        keys = list(self._r.scan_iter(match=pattern, count=500))
+        if keys:
+            self._r.delete(*keys)
+        return len(keys)
+
+    def volume(self) -> int:
+        pattern = f"{CACHE_SCHEMA_VERSION}:*"
+        total = 0
+        for key in self._r.scan_iter(match=pattern, count=500):
+            length = self._r.strlen(key)
+            total += length
+        return total
+
+    def close(self) -> None:
+        self._r.close()
+
+
 # ─── Serialization ──────────────────────────────────────────────
 
 
@@ -271,6 +332,11 @@ def build_cache() -> ResultCache:
     if backend == "sqlite":
         return DiskResultCache(
             settings.cache_path,
+            ttl_seconds=settings.cache_ttl_seconds,
+        )
+    if backend == "redis":
+        return RedisResultCache(
+            settings.redis_url,
             ttl_seconds=settings.cache_ttl_seconds,
         )
 

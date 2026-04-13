@@ -1,0 +1,22 @@
+# Example eval dataset — add your own cases here and run:
+#   zestimate eval --dataset eval_cases.example.yaml
+#
+# Each case is validated on load with clear error messages for typos.
+# See src/zestimate_agent/eval/dataset.py for all valid categories and modes.
+
+cases:
+  - id: custom-sfh-seattle
+    address: "742 Evergreen Terrace, Seattle, WA 98101"
+    category: sfh
+    mode: live
+    expected_status: ok
+    expected_value: 750000
+    tolerance_pct: 2.0
+    notes: "example live case — costs ScraperAPI credits"
+
+  - id: custom-not-found
+    address: "99999 Fake Blvd, Nowhere, ZZ 00000"
+    category: not_found
+    mode: live
+    expected_status: not_found
+    notes: "should resolve to NOT_FOUND"

@@ -39,6 +39,7 @@ from zestimate_agent.models import NormalizedAddress, ZestimateResult, Zestimate
 from zestimate_agent.normalize import Normalizer, default_normalizer
 from zestimate_agent.parse import parse as parse_page
 from zestimate_agent.resolve import ZillowResolver
+from zestimate_agent.tracing import start_span
 from zestimate_agent.validate import validate as validate_result
 
 log = get_logger(__name__)
@@ -192,7 +193,9 @@ class ZestimateAgent:
         # ─── 1. Normalize ───
         try:
             t0 = time.monotonic()
-            normalized = await asyncio.to_thread(self._normalizer.normalize, address)
+            with start_span("normalize", trace_id=trace_id) as span:
+                normalized = await asyncio.to_thread(self._normalizer.normalize, address)
+                span.set_attribute("address.canonical", normalized.canonical)
             _stage_ms("normalize", t0)
         except NormalizationError as e:
             return ZestimateResult(
@@ -220,7 +223,10 @@ class ZestimateAgent:
         # ─── 2. Resolve ───
         try:
             t0 = time.monotonic()
-            resolved = await self._resolver.resolve(normalized)
+            with start_span("resolve", trace_id=trace_id) as span:
+                resolved = await self._resolver.resolve(normalized)
+                span.set_attribute("resolve.zpid", resolved.zpid)
+                span.set_attribute("resolve.confidence", resolved.match_confidence)
             _stage_ms("resolve", t0)
         except PropertyNotFoundError as e:
             not_found = ZestimateResult(
@@ -260,8 +266,11 @@ class ZestimateAgent:
         # ─── 3. Fetch ───
         try:
             t0 = time.monotonic()
-            fetcher = self._get_fetcher()
-            fetch_result = await fetcher.fetch(resolved.url)
+            with start_span("fetch", trace_id=trace_id) as span:
+                fetcher = self._get_fetcher()
+                fetch_result = await fetcher.fetch(resolved.url)
+                span.set_attribute("fetch.fetcher", fetch_result.fetcher)
+                span.set_attribute("fetch.status", fetch_result.status)
             _stage_ms("fetch", t0)
         except CircuitOpenError as e:
             log.warning("circuit breaker open — failing fast", error=str(e))
@@ -296,7 +305,10 @@ class ZestimateAgent:
         # ─── 4. Parse ───
         try:
             t0 = time.monotonic()
-            result = await asyncio.to_thread(parse_page, fetch_result)
+            with start_span("parse", trace_id=trace_id) as span:
+                result = await asyncio.to_thread(parse_page, fetch_result)
+                span.set_attribute("parse.value", result.value or 0)
+                span.set_attribute("parse.status", result.status.value)
             _stage_ms("parse", t0)
         except NoZestimateError as e:
             no_zest = ZestimateResult(
@@ -347,13 +359,16 @@ class ZestimateAgent:
 
         # ─── 6. Validate (sanity + cross-check) ───
         t0 = time.monotonic()
-        validated = await validate_result(
-            enriched,
-            client=self._get_crosschecker(),
-            address=normalized,
-            force_crosscheck=force_crosscheck,
-            skip_crosscheck=skip_crosscheck,
-        )
+        with start_span("validate", trace_id=trace_id) as span:
+            validated = await validate_result(
+                enriched,
+                client=self._get_crosschecker(),
+                address=normalized,
+                force_crosscheck=force_crosscheck,
+                skip_crosscheck=skip_crosscheck,
+            )
+            span.set_attribute("validate.status", validated.status.value)
+            span.set_attribute("validate.confidence", validated.confidence)
 
         _stage_ms("validate", t0)
 

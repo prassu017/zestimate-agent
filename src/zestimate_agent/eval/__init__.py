@@ -27,6 +27,7 @@ from zestimate_agent.eval.dataset import (
 )
 from zestimate_agent.eval.report import EvalReport, EvalSummary
 from zestimate_agent.eval.runner import EvalOutcome, EvalRunConfig, run_eval
+from zestimate_agent.eval.yaml_loader import load_yaml_dataset
 
 __all__ = [
     "DEFAULT_DATASET",
@@ -39,5 +40,6 @@ __all__ = [
     "EvalSummary",
     "by_category",
     "by_mode",
+    "load_yaml_dataset",
     "run_eval",
 ]

@@ -18,7 +18,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 FetcherName = Literal["unblocker", "playwright"]
 UnblockerProvider = Literal["zenrows", "scraperapi", "brightdata"]
 CrosscheckProvider = Literal["none", "rentcast", "attom"]
-CacheBackend = Literal["sqlite", "memory", "none"]
+CacheBackend = Literal["sqlite", "memory", "redis", "none"]
 LogFormat = Literal["pretty", "json"]
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR"]
 
@@ -69,6 +69,7 @@ class Settings(BaseSettings):
     cache_backend: CacheBackend = "sqlite"
     cache_path: Path = Path(".cache/zestimate.db")
     cache_ttl_seconds: int = 21600  # 6 hours
+    redis_url: str = "redis://localhost:6379/0"
 
     # ─── HTTP ───────────────────────────────────────────────────
     http_timeout_seconds: float = 30.0
@@ -98,6 +99,10 @@ class Settings(BaseSettings):
     # The env var is `ZESTIMATE_API_KEY` (explicit alias to avoid clashing
     # with the generic `API_KEY` name used by other processes).
     api_key: SecretStr | None = Field(default=None, validation_alias="ZESTIMATE_API_KEY")
+    # Signed URL secret for CDN caching. When set, /lookup and /zestimate
+    # require valid ?sig=...&exp=... query params. Unset = open (local dev).
+    signed_url_secret: str | None = Field(default=None, validation_alias="SIGNED_URL_SECRET")
+
     # CORS allowed origins. Comma-separated via `ZESTIMATE_CORS_ORIGINS`.
     cors_origins: str = Field(default="", validation_alias="ZESTIMATE_CORS_ORIGINS")
 
